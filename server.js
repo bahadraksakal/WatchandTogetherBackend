@@ -9,25 +9,16 @@ const fs = require("fs");
 
 const app = express();
 
-// HTTPS için sertifika ve özel anahtar
-let privateKey;
-let certificate;
-try {
-  privateKey = fs.readFileSync("./private-key.pem", "utf8");
-} catch (error) {
-  console.error("Özel anahtar dosyası okunurken hata oluştu:", error.message);
-}
-
-try {
-  certificate = fs.readFileSync("./certificate.pem", "utf8");
-} catch (error) {
-  console.error("Sertifika dosyası okunurken hata oluştu:", error.message);
-  process.exit(1);
-}
+// HTTPS Sertifikaları
 const credentials = {
-  key: privateKey,
-  cert: certificate,
-  passphrase: "12345678",
+  key: fs.readFileSync(
+    "/etc/letsencrypt/live/watchtogether.duckdns.org/privkey.pem",
+    "utf8"
+  ),
+  cert: fs.readFileSync(
+    "/etc/letsencrypt/live/watchtogether.duckdns.org/fullchain.pem",
+    "utf8"
+  ),
 };
 
 const server = https.createServer(credentials, app); // https.createServer kullanıldı
@@ -45,6 +36,15 @@ app.get("/health", (req, res) => {
 
 app.use(cors());
 app.use(express.json());
+
+// HTTP'den HTTPS'ye Yönlendirme
+app.use((req, res, next) => {
+  if (!req.secure) {
+    return res.redirect(`https://${req.headers.host}${req.url}`);
+  }
+  next();
+});
+
 app.use("/videos", express.static(path.join(__dirname, "videos")));
 
 const uploadDir = path.join(__dirname, "videos");
@@ -134,12 +134,10 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
           .send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
       }
       console.log("Dosya başarıyla yüklendi:", req.file.filename);
-      res
-        .status(200)
-        .send({
-          message: "Dosya başarıyla yüklendi!",
-          filename: req.file.filename,
-        });
+      res.status(200).send({
+        message: "Dosya başarıyla yüklendi!",
+        filename: req.file.filename,
+      });
     });
   } catch (error) {
     console.error("Video yükleme sırasında bir hata oluştu:", error);
