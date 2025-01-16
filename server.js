@@ -1,4 +1,3 @@
-// Backend Kaynak Kodları:
 // server.js
 const express = require("express");
 const https = require("https");
@@ -7,7 +6,7 @@ const { Server } = require("socket.io");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const Busboy = require('busboy'); // Busboy doğru şekilde import edildi
+const { Busboy } = require('busboy'); // Busboy doğru şekilde import edildi
 
 const app = express();
 
@@ -35,6 +34,8 @@ const io = new Server(server, {
 app.get("/health", (req, res) => {
   res.status(200).send("Sunucu çalışıyor!");
 });
+app.use(cors());
+app.use(express.json());
 
 // HTTP'den HTTPS'ye Yönlendirme
 app.use((req, res, next) => {
@@ -140,11 +141,11 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
     const writeStream = fs.createWriteStream(saveTo);
 
     file.pipe(writeStream);
-
     file.on("data", (chunk) => {
       uploadedBytes += chunk.length;
       const progress = Math.round((uploadedBytes / totalBytes) * 100);
-      io.emit("upload-progress", { progress, speed: calculateSpeed(uploadedBytes) });
+      const remaining = Math.round(100 - progress);
+      io.emit("upload-progress", { progress, remaining, speed: calculateSpeed(uploadedBytes) });
     });
 
     file.on("end", () => {
@@ -171,7 +172,6 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
     io.emit("upload-end");
     res.status(500).send({ message: "Yükleme sırasında bir hata oluştu." });
   });
-
   req.pipe(busboy);
 
   const calculateSpeed = (() => {
@@ -288,16 +288,6 @@ io.on("connection", (socket) => {
     socket.emit("video-state", videoState);
 
     // Mevcut video dosya listesini gönder
-    const videoDir = path.join(__dirname, "videos");
-    fs.readdir(videoDir, (err, files) => {
-      if (err) {
-        console.error("Video dizini okunurken hata:", err);
-        return;
-      }
-      socket.emit("available-videos", files);
-    });
-
-    // Mevcut video dosya listesini gönder
     const sendAvailableVideos = () => {
       fs.readdir(uploadDir, (err, files) => {
         if (err) {
@@ -312,7 +302,6 @@ io.on("connection", (socket) => {
 
     // Mevcut yükleme durumunu gönder
     socket.emit("upload-status", isUploading);
-
   });
 
   // Video kontrol olayları
