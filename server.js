@@ -195,6 +195,7 @@ app.delete("/videos/:filename", async (req, res) => {
 let connectedUsers = 0;
 const users = {};
 const mediaStreams = {}; // Kullanıcıların medya akışlarını saklamak için
+const videoRooms = {}; // { roomId: [socketId1, socketId2, ...] }
 let videoState = {
   isPlaying: false,
   currentTime: 0,
@@ -289,38 +290,75 @@ io.on("connection", (socket) => {
 
     // Mevcut yükleme durumunu gönder
     socket.emit("upload-status", isUploading);
-
   });
 
-  // Kullanıcı medya akışını başlattığında
-  socket.on("start-media-stream", ({ userId, hasAudio, hasVideo }) => {
-    mediaStreams[userId] = { hasAudio, hasVideo };
-    if (users[userId]) {
-      users[userId].hasAudio = hasAudio;
-      users[userId].hasVideo = hasVideo;
-    }
-    console.log(
-      `Kullanıcı ${userId} medya akışını başlattı. Ses: ${hasAudio}, Video: ${hasVideo}`
-    );
-    // Diğer kullanıcıya bu kullanıcının medya akışını başlattığını bildir
-    socket.broadcast.emit("user-media-stream-started", {
-      userId,
-      hasAudio,
-      hasVideo,
-    });
-  });
-
-  // Başka bir kullanıcının medya akışını almayı talep ettiğinde (Gerekli değil ama tutulabilir)
-  socket.on("request-remote-stream", (targetUserId) => {
-    // Sunucu bu isteği aldığında, hedef kullanıcının medya özelliklerini (ses/video var mı)
-    // isteyene bildirebilir. Ancak gerçek medya akışı için WebRTC P2P devam eder.
-    if (mediaStreams[targetUserId]) {
-      socket.emit("remote-stream-ready", {
-        userId: targetUserId,
-        stream: null, // Gerçek akış değil, sadece bilgi
+  // Kullanıcı medya durumunu güncellediğinde (SFU mantığına göre)
+  socket.on("toggle-media", ({ audio, video }) => {
+    if (users[socket.id]) {
+      users[socket.id].hasAudio = audio;
+      users[socket.id].hasVideo = video;
+      // Aynı odadaki diğer kullanıcılara bildir
+      Object.keys(videoRooms).forEach(roomId => {
+        if (videoRooms[roomId].includes(socket.id)) {
+          videoRooms[roomId].forEach(userSocketId => {
+            if (userSocketId !== socket.id) {
+              io.to(userSocketId).emit("remote-media-toggled", {
+                socketId: socket.id,
+                audio,
+                video,
+              });
+            }
+          });
+        }
       });
-    } else {
-      socket.emit("remote-stream-unavailable", targetUserId);
+    }
+  });
+
+  // Kullanıcı video odasına katılma isteği
+  socket.on("join-video-room", (targetUserId) => {
+    const roomId = [socket.id, targetUserId].sort().join("_"); // Unique room ID
+    socket.join(roomId);
+
+    if (!videoRooms[roomId]) {
+      videoRooms[roomId] = [];
+    }
+
+    if (!videoRooms[roomId].includes(socket.id)) {
+      videoRooms[roomId].push(socket.id);
+    }
+
+    // Notify the user who initiated the call
+    io.to(targetUserId).emit("user-joined-video-room", socket.id);
+
+    // Notify the current user that they've joined
+    socket.emit("user-joined-video-room", targetUserId);
+
+    // Send initial media status to the new user
+    const otherUserSocketId = videoRooms[roomId].find(id => id !== socket.id);
+    if (otherUserSocketId && users[otherUserSocketId]) {
+      socket.emit("remote-media-stream", {
+        socketId: otherUserSocketId,
+        audio: users[otherUserSocketId].hasAudio,
+        video: users[otherUserSocketId].hasVideo,
+      });
+    }
+  });
+
+  // Kullanıcı video odasından ayrılma isteği
+  socket.on("leave-video-room", (targetUserId) => {
+    const roomId = [socket.id, targetUserId].sort().join("_");
+    socket.leave(roomId);
+
+    if (videoRooms[roomId]) {
+      videoRooms[roomId] = videoRooms[roomId].filter(id => id !== socket.id);
+      if (videoRooms[roomId].length === 0) {
+        delete videoRooms[roomId];
+      } else {
+        // Notify the other user in the room
+        videoRooms[roomId].forEach(userSocketId => {
+          io.to(userSocketId).emit("user-left-video-room", socket.id);
+        });
+      }
     }
   });
 
@@ -363,63 +401,22 @@ io.on("connection", (socket) => {
     io.emit("video-state", videoState);
   });
 
-  // WebRTC Sinyalizasyon olayları (Şimdilik P2P kalıyor)
-  socket.on("offer", async (data) => {
-    try {
-      const { target, offer } = data;
-      if (!users[target]) {
-        console.error(`Offer hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
-        return;
-      }
-      await io.to(target).emit("offer", { from: socket.id, offer });
-    } catch (error) {
-      console.error("Offer olayı sırasında bir hata oluştu:", error);
-      socket.emit("error", `Offer sırasında bir hata oluştu : ${error.message}`);
-    }
-  });
-
-  socket.on("answer", async (data) => {
-    try {
-      const { target, answer } = data;
-      if (!users[target]) {
-        console.error(`Answer hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
-        return;
-      }
-      await io.to(target).emit("answer", { from: socket.id, answer });
-    } catch (error) {
-      console.error("Answer olayı sırasında bir hata oluştu:", error);
-      socket.emit("error", `Answer sırasında bir hata oluştu : ${error.message}`);
-    }
-  });
-
-  socket.on("ice-candidate", async (data) => {
-    try {
-      const { target, candidate } = data;
-      if (!users[target]) {
-        console.error(`ICE candidate hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
-        return;
-      }
-      await io.to(target).emit("ice-candidate", { from: socket.id, candidate });
-    } catch (error) {
-      console.error("ICE Candidate olayı sırasında hata oluştu:", error);
-      socket.emit("error", `ICE Candidate sırasında bir hata oluştu : ${error.message}`);
-    }
-  });
-
-  // Video Call İstekleri
-  socket.on("request-video-call", () => {
-    const otherUserSocketId = Object.keys(users).find(
-      (id) => id !== socket.id
-    );
-    if (otherUserSocketId) {
-      io.to(otherUserSocketId).emit("incoming-video-call", socket.id);
-    }
-  });
-
   // Kullanıcı çıkışı, ayrıldı.
   socket.on("disconnect", () => {
     if (users[socket.id]) {
       console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
+      // Video odalarından ayrıldığını bildir
+      Object.keys(videoRooms).forEach(roomId => {
+        if (videoRooms[roomId].includes(socket.id)) {
+          videoRooms[roomId] = videoRooms[roomId].filter(id => id !== socket.id);
+          videoRooms[roomId].forEach(userSocketId => {
+            io.to(userSocketId).emit("user-left-video-room", socket.id);
+          });
+          if (videoRooms[roomId].length === 0) {
+            delete videoRooms[roomId];
+          }
+        }
+      });
       delete users[socket.id];
       connectedUsers = Object.keys(users).length;
       const sendUpdatedUsers = () => {
