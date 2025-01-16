@@ -107,8 +107,6 @@ const checkTotalFileSize = async (req, res, next) => {
     // Dosya yükleme işlemi için özel timeout
     req.setTimeout(6 * 60 * 60 * 1000); // 6 saat
     next();
-
-    next();
   } catch (error) {
     console.error("Toplam dosya boyutu kontrolü sırasında hata:", error);
     return res
@@ -125,56 +123,76 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
   }
   isUploading = true;
   io.emit("upload-start"); // Yükleme başladığını diğer kullanıcılara bildir
+
   let uploadedBytes = 0;
-  try {
-    upload.single("video")(req, res, (err) => {
-      isUploading = false;
-      io.emit("upload-end");
-      if (err) {
-        console.error("Yükleme hatası:", err.message);
-        if (err.code === "LIMIT_FILE_SIZE") {
-          return res.status(413).send({ message: "Dosya boyutu sınırı aşıldı (maksimum 16GB)." });
-        }
-        return res.status(400).send({ message: `Yükleme hatası: ${err.message}` });
-      }
-      if (!req.file) {
-        return res.status(400).send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
-      }
-      console.log("Dosya başarıyla yüklendi:", req.file.filename);
-      res.status(200).send({
-        message: "Dosya başarıyla yüklendi!",
-        filename: req.file.filename,
+  const totalBytes = parseInt(req.headers['content-length'], 10);
+
+  // Hız hesaplama için
+  let lastTime = Date.now();
+  let lastUploadedBytes = 0;
+
+  const busboy = new Busboy({ headers: req.headers });
+  busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+    console.log(`Dosya alınıyor: ${filename}`);
+    const saveTo = path.join(__dirname, 'videos', filename);
+    const writeStream = fs.createWriteStream(saveTo);
+
+    file.pipe(writeStream);
+
+    file.on('data', (chunk) => {
+      uploadedBytes += chunk.length;
+      const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
+      io.emit("upload-progress", {
+        progress: Math.round(progress),
+        speed: calculateSpeed(uploadedBytes),
       });
     });
 
-    req.on('data', (chunk) => {
-      uploadedBytes += chunk.length;
-      const totalBytes = parseInt(req.headers['content-length'], 10);
-      const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
-      io.emit("upload-progress", { progress: Math.round(progress), speed: calculateSpeed(chunk.length) });
+    file.on('end', () => {
+      console.log(`Yükleme tamamlandı: ${filename}`);
     });
-  } catch (error) {
+
+    writeStream.on('finish', () => {
+      res.status(200).send({
+        message: "Dosya başarıyla yüklendi!",
+        filename: filename,
+      });
+      isUploading = false;
+      io.emit("upload-end");
+    });
+
+    writeStream.on('error', (err) => {
+      console.error("Dosya yazma hatası:", err.message);
+      res.status(500).send({ message: "Dosya kaydedilemedi." });
+      isUploading = false;
+      io.emit("upload-end");
+    });
+  });
+
+  busboy.on('error', (err) => {
+    console.error("Busboy hatası:", err.message);
+    res.status(500).send({ message: "Yükleme sırasında bir hata oluştu." });
     isUploading = false;
     io.emit("upload-end");
-    console.error("Video yükleme sırasında bir hata oluştu:", error);
-    res.status(500).send({ message: "Sunucu hatası: Video yüklenemedi." });
-  }
+  });
 
-  // Dosya yükleme hızını hesaplama
-  let lastTime = Date.now();
-  let lastBytes = 0;
-  const calculateSpeed = (currentChunkLength) => {
+  req.pipe(busboy);
+
+  const calculateSpeed = (uploadedBytes) => {
     const currentTime = Date.now();
-    const timeDiff = (currentTime - lastTime) / 1000;
+    const timeDiff = (currentTime - lastTime) / 1000; // Saniye cinsinden fark
+    const bytesDiff = Math.max(uploadedBytes - lastUploadedBytes, 0); // Negatif değerleri önle
     if (timeDiff > 0) {
-      const speed = (currentChunkLength - lastBytes) / timeDiff;
+      const speed = bytesDiff / timeDiff; // Hız = Aktarılan byte / süre
       lastTime = currentTime;
-      lastBytes = currentChunkLength;
-      return Math.round(speed / 1024);
+      lastUploadedBytes = uploadedBytes;
+      return Math.round(speed / 1024); // KB/s
     }
-    return 0
+    return 0;
   };
+
 });
+
 
 // Video silme endpoint'i
 app.delete("/videos/:filename", async (req, res) => {
