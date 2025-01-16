@@ -194,6 +194,7 @@ app.delete("/videos/:filename", async (req, res) => {
 // Kullanıcı ve video durumu
 let connectedUsers = 0;
 const users = {};
+const mediaStreams = {}; // Kullanıcıların medya akışlarını saklamak için
 let videoState = {
   isPlaying: false,
   currentTime: 0,
@@ -291,6 +292,26 @@ io.on("connection", (socket) => {
 
   });
 
+  // Kullanıcı medya akışını başlattığında
+  socket.on("start-media-stream", ({ userId, streamId }) => {
+    mediaStreams[userId] = streamId;
+    console.log(`Kullanıcı ${userId} medya akışını başlattı: ${streamId}`);
+    // Diğer kullanıcıya bu kullanıcının medya akışını başlattığını bildir
+    socket.broadcast.emit("user-media-stream-started", { userId, streamId });
+  });
+
+  // Başka bir kullanıcının medya akışını almayı talep ettiğinde
+  socket.on("request-remote-stream", (targetUserId) => {
+    if (mediaStreams[targetUserId]) {
+      socket.emit("remote-stream-ready", {
+        userId: targetUserId,
+        streamId: mediaStreams[targetUserId],
+      });
+    } else {
+      socket.emit("remote-stream-unavailable", targetUserId);
+    }
+  });
+
   // Video kontrol olayları
   socket.on("play", () => {
     videoState.isPlaying = true;
@@ -330,7 +351,7 @@ io.on("connection", (socket) => {
     io.emit("video-state", videoState);
   });
 
-  // WebRTC Sinyalizasyon olayları
+  // WebRTC Sinyalizasyon olayları (Şimdilik P2P kalıyor, media relay için güncellenecek)
   socket.on("offer", async (data) => {
     try {
       const { target, offer } = data;
