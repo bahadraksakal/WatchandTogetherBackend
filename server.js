@@ -1,6 +1,7 @@
+// Backend Kaynak Kodları:
 // server.js
 const express = require("express");
-const https = require("https"); // http yerine https kullandık
+const https = require("https");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const multer = require("multer");
@@ -21,10 +22,10 @@ const credentials = {
   ),
 };
 
-const server = https.createServer(credentials, app); // https.createServer kullanıldı
+const server = https.createServer(credentials, app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // Üretim ortamında burayı kısıtlamanız önerilir
+    origin: "*",
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
   },
 });
@@ -88,13 +89,12 @@ const checkTotalFileSize = async (req, res, next) => {
   let currentTotalSize = 0;
 
   try {
-    const files = await fs.promises.readdir(uploadDir); // fs.promises.readdir kullanıldı
+    const files = await fs.promises.readdir(uploadDir);
     for (const file of files) {
-      const stats = await fs.promises.stat(path.join(uploadDir, file)); // fs.promises.stat kullanıldı
+      const stats = await fs.promises.stat(path.join(uploadDir, file));
       currentTotalSize += stats.size;
     }
 
-    // req.headers['content-length'] undefined olabilir, bu yüzden varsayılan olarak 0 ekleyelim
     const contentLength = parseInt(req.headers["content-length"] || "0", 10);
 
     if (currentTotalSize + contentLength > maxSize) {
@@ -112,12 +112,24 @@ const checkTotalFileSize = async (req, res, next) => {
   }
 };
 
+let isUploading = false; // Yükleme durumunu takip etmek için
+
 // Video yükleme endpoint'i (toplam boyut kontrolü eklenmiş)
 app.post("/upload", checkTotalFileSize, (req, res) => {
+  if (isUploading) {
+    return res
+      .status(400)
+      .send({ message: "Şu anda başka bir yükleme işlemi devam ediyor." });
+  }
+
+  isUploading = true;
+  io.emit("upload-start"); // Yükleme başladığını diğer kullanıcılara bildir
+
   try {
     upload.single("video")(req, res, (err) => {
+      isUploading = false;
+      io.emit("upload-end"); // Yükleme bittiğini diğer kullanıcılara bildir
       if (err) {
-        // Multer hatalarını yakalama (dosya boyutu aşımı dahil)
         console.error("Yükleme hatası:", err.message);
         if (err.code === "LIMIT_FILE_SIZE") {
           return res
@@ -140,6 +152,8 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
       });
     });
   } catch (error) {
+    isUploading = false;
+    io.emit("upload-end"); // Hata durumunda da yükleme bittiğini bildir
     console.error("Video yükleme sırasında bir hata oluştu:", error);
     res.status(500).send({ message: "Sunucu hatası: Video yüklenemedi." });
   }
@@ -151,7 +165,7 @@ app.delete("/videos/:filename", async (req, res) => {
   const filePath = path.join(uploadDir, filename);
 
   try {
-    await fs.promises.unlink(filePath); // fs.promises.unlink kullanıldı
+    await fs.promises.unlink(filePath);
     console.log(`Dosya başarıyla silindi: ${filename}`);
     res.status(200).send({ message: "Dosya başarıyla silindi!" });
   } catch (error) {
@@ -183,7 +197,7 @@ io.on("connection", (socket) => {
     const dataSnippet =
       args.length > 0
         ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) +
-          "..."
+        "..."
         : "";
     console.log(
       `Gelen Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`
@@ -196,7 +210,7 @@ io.on("connection", (socket) => {
     const dataSnippet =
       args.length > 0
         ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) +
-          "..."
+        "..."
         : "";
     console.log(
       `Giden Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`
@@ -244,6 +258,9 @@ io.on("connection", (socket) => {
       }
       socket.emit("available-videos", files);
     });
+
+    // Mevcut yükleme durumunu gönder
+    socket.emit("upload-status", isUploading);
   });
 
   // Video kontrol olayları
@@ -325,16 +342,15 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Basit sesli arama olayları (İPTAL - WebRTC kullanıyoruz)
-  // socket.on('start-audio-call', () => {
-  //   console.log(`Kullanıcı ${users[socket.id]?.username} sesli arama başlattı.`);
-  //   socket.broadcast.emit('audio-call-started', socket.id);
-  // });
-
-  // socket.on('end-audio-call', () => {
-  //   console.log(`Kullanıcı ${users[socket.id]?.username} sesli aramayı bitirdi.`);
-  //   socket.broadcast.emit('audio-call-ended', socket.id);
-  // });
+  // Video Call İstekleri
+  socket.on("request-video-call", () => {
+    const otherUserSocketId = Object.keys(users).find(
+      (id) => id !== socket.id
+    );
+    if (otherUserSocketId) {
+      io.to(otherUserSocketId).emit("incoming-video-call", socket.id);
+    }
+  });
 
   // Kullanıcı çıkışı
   socket.on("disconnect", () => {
