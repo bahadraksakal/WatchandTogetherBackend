@@ -119,36 +119,26 @@ const checkTotalFileSize = async (req, res, next) => {
 
 let isUploading = false; // Yükleme durumunu takip etmek için
 
-// Video yükleme endpoint'i (toplam boyut kontrolü eklenmiş)
 app.post("/upload", checkTotalFileSize, (req, res) => {
   if (isUploading) {
-    return res
-      .status(400)
-      .send({ message: "Şu anda başka bir yükleme işlemi devam ediyor." });
+    return res.status(400).send({ message: "Şu anda başka bir yükleme işlemi devam ediyor." });
   }
-
   isUploading = true;
   io.emit("upload-start"); // Yükleme başladığını diğer kullanıcılara bildir
-
+  let uploadedBytes = 0;
   try {
     upload.single("video")(req, res, (err) => {
       isUploading = false;
-      io.emit("upload-end"); // Yükleme bittiğini diğer kullanıcılara bildir
+      io.emit("upload-end");
       if (err) {
         console.error("Yükleme hatası:", err.message);
         if (err.code === "LIMIT_FILE_SIZE") {
-          return res
-            .status(413)
-            .send({ message: "Dosya boyutu sınırı aşıldı (maksimum 16GB)." });
+          return res.status(413).send({ message: "Dosya boyutu sınırı aşıldı (maksimum 16GB)." });
         }
-        return res
-          .status(400)
-          .send({ message: `Yükleme hatası: ${err.message}` });
+        return res.status(400).send({ message: `Yükleme hatası: ${err.message}` });
       }
       if (!req.file) {
-        return res
-          .status(400)
-          .send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
+        return res.status(400).send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
       }
       console.log("Dosya başarıyla yüklendi:", req.file.filename);
       res.status(200).send({
@@ -156,12 +146,34 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
         filename: req.file.filename,
       });
     });
+
+    req.on('data', (chunk) => {
+      uploadedBytes += chunk.length;
+      const totalBytes = parseInt(req.headers['content-length'], 10);
+      const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
+      io.emit("upload-progress", { progress: Math.round(progress), speed: calculateSpeed(chunk.length) });
+    });
   } catch (error) {
     isUploading = false;
-    io.emit("upload-end"); // Hata durumunda da yükleme bittiğini bildir
+    io.emit("upload-end");
     console.error("Video yükleme sırasında bir hata oluştu:", error);
     res.status(500).send({ message: "Sunucu hatası: Video yüklenemedi." });
   }
+
+  // Dosya yükleme hızını hesaplama
+  let lastTime = Date.now();
+  let lastBytes = 0;
+  const calculateSpeed = (currentChunkLength) => {
+    const currentTime = Date.now();
+    const timeDiff = (currentTime - lastTime) / 1000;
+    if (timeDiff > 0) {
+      const speed = (currentChunkLength - lastBytes) / timeDiff;
+      lastTime = currentTime;
+      lastBytes = currentChunkLength;
+      return Math.round(speed / 1024);
+    }
+    return 0
+  };
 });
 
 // Video silme endpoint'i
