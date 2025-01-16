@@ -103,6 +103,11 @@ const checkTotalFileSize = async (req, res, next) => {
           "Toplam dosya boyutu sınırı aşıldı (maksimum 16GB). Yeni dosya yüklenemez.",
       });
     }
+
+    // Dosya yükleme işlemi için özel timeout
+    req.setTimeout(6 * 60 * 60 * 1000); // 6 saat
+    next();
+
     next();
   } catch (error) {
     console.error("Toplam dosya boyutu kontrolü sırasında hata:", error);
