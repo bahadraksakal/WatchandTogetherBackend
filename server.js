@@ -157,6 +157,7 @@ app.delete("/videos/:filename", async (req, res) => {
 
 let connectedUsers = 0;
 const users = {}; // { socketId: { username, id, hasAudio, hasVideo } }
+const SERVER_ROOM = "server-room"; // Sabit oda adı
 let videoState = {
   isPlaying: false,
   currentTime: 0,
@@ -196,11 +197,13 @@ io.on("connection", (socket) => {
     users[socket.id] = { username, id: socket.id, hasAudio: false, hasVideo: false };
     console.log("Kullanıcı bağlandı:", username, socket.id);
 
+    socket.join(SERVER_ROOM); // Kullanıcıyı otomatik olarak server odasına ekle
+
     // Mevcut kullanıcıların bilgisini gönder
-    io.emit("existing-users", Object.values(users));
+    io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
 
     // Yeni kullanıcının katıldığını diğerlerine bildir
-    socket.broadcast.emit("user-joined", { username, id: socket.id });
+    socket.broadcast.to(SERVER_ROOM).emit("user-joined", { username, id: socket.id });
 
     // Mevcut video durumunu gönder
     socket.emit("video-state", videoState);
@@ -235,59 +238,47 @@ io.on("connection", (socket) => {
       users[socket.id].hasAudio = audio;
       users[socket.id].hasVideo = video;
       // Tüm bağlı kullanıcılara bildir (kendisi hariç)
-      socket.broadcast.emit("remote-media-toggled", { socketId: socket.id, audio, video });
+      socket.broadcast.to(SERVER_ROOM).emit("remote-media-toggled", { socketId: socket.id, audio, video });
     }
-  });
-
-  socket.on("start-call", () => {
-    console.log(`Kullanıcı görüntülü görüşme başlattı: ${socket.id}`);
-    // Diğer tüm kullanıcılara çağrı olduğunu bildir
-    socket.broadcast.emit("incoming-call", socket.id);
-  });
-
-  socket.on("end-call", () => {
-    console.log(`Kullanıcı görüntülü görüşmeyi sonlandırdı: ${socket.id}`);
-    // Diğer tüm kullanıcılara görüşmenin bittiğini bildir
-    socket.broadcast.emit("call-ended", socket.id);
   });
 
   // Video kontrol olayları (aynı kalır)
   socket.on("play", () => {
     videoState.isPlaying = true;
-    io.emit("play");
+    io.to(SERVER_ROOM).emit("play");
   });
 
   socket.on("pause", () => {
     videoState.isPlaying = false;
-    io.emit("pause");
+    io.to(SERVER_ROOM).emit("pause");
   });
 
   socket.on("seek", (time) => {
     videoState.currentTime = time;
-    io.emit("seek", time);
+    io.to(SERVER_ROOM).emit("seek", time);
   });
 
   socket.on("mute", () => {
     videoState.muted = true;
-    io.emit("mute");
+    io.to(SERVER_ROOM).emit("mute");
   });
 
   socket.on("unmute", () => {
     videoState.muted = false;
-    io.emit("unmute");
+    io.to(SERVER_ROOM).emit("unmute");
   });
 
   socket.on("volume-change", (volume) => {
     videoState.volume = volume;
-    io.emit("volume-change", volume);
+    io.to(SERVER_ROOM).emit("volume-change", volume);
   });
 
   socket.on("select-video", (filename) => {
     videoState.currentVideo = filename;
     videoState.isPlaying = false;
     videoState.currentTime = 0;
-    io.emit("video-selected", filename);
-    io.emit("video-state", videoState);
+    io.to(SERVER_ROOM).emit("video-selected", filename);
+    io.to(SERVER_ROOM).emit("video-state", videoState);
   });
 
   socket.on("disconnect", () => {
@@ -295,8 +286,9 @@ io.on("connection", (socket) => {
       console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
       delete users[socket.id];
       connectedUsers = Object.keys(users).length;
-      io.emit("existing-users", Object.values(users));
-      io.emit("user-left", socket.id);
+      io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
+      io.to(SERVER_ROOM).emit("user-left", socket.id);
+      socket.leave(SERVER_ROOM); // Kullanıcı ayrıldığında odadan çık
     }
   });
 });
