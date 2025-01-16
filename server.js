@@ -307,7 +307,7 @@ io.on("connection", (socket) => {
     try {
       const { target, offer } = data;
       if (!users[target]) {
-        console.error("Offer hedefi bulunamadı.", data);
+        console.error(`Offer hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
         return;
       }
       io.to(target).emit("offer", { from: socket.id, offer });
@@ -320,7 +320,7 @@ io.on("connection", (socket) => {
     try {
       const { target, answer } = data;
       if (!users[target]) {
-        console.error("Answer hedefi bulunamadı.", data);
+        console.error(`Answer hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
         return;
       }
       io.to(target).emit("answer", { from: socket.id, answer });
@@ -333,7 +333,7 @@ io.on("connection", (socket) => {
     try {
       const { target, candidate } = data;
       if (!users[target]) {
-        console.error("ICE candidate hedefi bulunamadı.", data);
+        console.error(`ICE candidate hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
         return;
       }
       io.to(target).emit("ice-candidate", { from: socket.id, candidate });
