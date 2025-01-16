@@ -167,6 +167,8 @@ app.delete("/videos/:filename", async (req, res) => {
   try {
     await fs.promises.unlink(filePath);
     console.log(`Dosya başarıyla silindi: ${filename}`);
+    // Silme olayını tüm bağlı istemcilere yayınla
+    io.emit("video-deleted", filename);
     res.status(200).send({ message: "Dosya başarıyla silindi!" });
   } catch (error) {
     console.error("Dosya silinirken bir hata oluştu:", error);
@@ -237,11 +239,11 @@ io.on("connection", (socket) => {
     users[socket.id] = { username, id: socket.id };
     console.log("Kullanıcı bağlandı:", username, socket.id);
 
-    // Yeni kullanıcıya mevcut kullanıcıları gönder
-    const existingUsers = Object.values(users).filter(
-      (user) => user.id !== socket.id
-    );
-    socket.emit("existing-users", existingUsers);
+    // Mevcut kullanıcıları tüm kullanıcılara gönder
+    const sendUpdatedUsers = () => {
+      io.emit("existing-users", Object.values(users));
+    };
+    sendUpdatedUsers();
 
     // Diğer kullanıcılara yeni kullanıcının katıldığını bildir
     socket.broadcast.emit("user-joined", { username, id: socket.id });
@@ -259,8 +261,22 @@ io.on("connection", (socket) => {
       socket.emit("available-videos", files);
     });
 
+    // Mevcut video dosya listesini gönder
+    const sendAvailableVideos = () => {
+      fs.readdir(uploadDir, (err, files) => {
+        if (err) {
+          console.error("Video dizini okunurken hata:", err);
+          return;
+        }
+        io.emit("available-videos", files);
+      });
+    };
+
+    sendAvailableVideos()
+
     // Mevcut yükleme durumunu gönder
     socket.emit("upload-status", isUploading);
+
   });
 
   // Video kontrol olayları
@@ -303,42 +319,46 @@ io.on("connection", (socket) => {
   });
 
   // WebRTC Sinyalizasyon olayları
-  socket.on("offer", (data) => {
+  socket.on("offer", async (data) => {
     try {
       const { target, offer } = data;
       if (!users[target]) {
         console.error(`Offer hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
         return;
       }
-      io.to(target).emit("offer", { from: socket.id, offer });
+      await io.to(target).emit("offer", { from: socket.id, offer });
+
     } catch (error) {
       console.error("Offer olayı sırasında bir hata oluştu:", error);
+      socket.emit("error", `Offer sırasında bir hata oluştu : ${error.message}`);
     }
   });
 
-  socket.on("answer", (data) => {
+  socket.on("answer", async (data) => {
     try {
       const { target, answer } = data;
       if (!users[target]) {
         console.error(`Answer hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
         return;
       }
-      io.to(target).emit("answer", { from: socket.id, answer });
+      await io.to(target).emit("answer", { from: socket.id, answer });
     } catch (error) {
       console.error("Answer olayı sırasında bir hata oluştu:", error);
+      socket.emit("error", `Answer sırasında bir hata oluştu : ${error.message}`);
     }
   });
 
-  socket.on("ice-candidate", (data) => {
+  socket.on("ice-candidate", async (data) => {
     try {
       const { target, candidate } = data;
       if (!users[target]) {
         console.error(`ICE candidate hedefi bulunamadı. Hedef: ${target}, Gönderen: ${socket.id}`);
         return;
       }
-      io.to(target).emit("ice-candidate", { from: socket.id, candidate });
+      await io.to(target).emit("ice-candidate", { from: socket.id, candidate });
     } catch (error) {
       console.error("ICE Candidate olayı sırasında hata oluştu:", error);
+      socket.emit("error", `ICE Candidate sırasında bir hata oluştu : ${error.message}`);
     }
   });
 
@@ -352,12 +372,16 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Kullanıcı çıkışı
+  // Kullanıcı çıkışı, ayrıldı.
   socket.on("disconnect", () => {
     if (users[socket.id]) {
       console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
       delete users[socket.id];
-      connectedUsers--;
+      connectedUsers = Object.keys(users).length;
+      const sendUpdatedUsers = () => {
+        io.emit("existing-users", Object.values(users));
+      };
+      sendUpdatedUsers();
       io.emit("user-left", socket.id);
     }
   });
