@@ -1,3 +1,4 @@
+// Backend Kaynak Kodları:
 // server.js
 const express = require("express");
 const https = require("https");
@@ -6,7 +7,6 @@ const { Server } = require("socket.io");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const { Busboy } = require('busboy'); // Busboy doğru şekilde import edildi
 
 const app = express();
 
@@ -34,6 +34,7 @@ const io = new Server(server, {
 app.get("/health", (req, res) => {
   res.status(200).send("Sunucu çalışıyor!");
 });
+
 app.use(cors());
 app.use(express.json());
 
@@ -45,25 +46,20 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use("/videos", express.static(path.join(__dirname, "videos")));
+
 const uploadDir = path.join(__dirname, "videos");
 
-// Upload dizinini oluştur
-(async () => {
-  try {
-    await fs.promises.mkdir(uploadDir, { recursive: true });
-  } catch (err) {
-    console.error("Dizin oluşturulurken hata:", err);
-  }
-})();
+// Upload dizinini oluştur (eğer yoksa)
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
 
-app.use("/videos", express.static(uploadDir));
-
-// Multer Ayarları
+// Multer ayarları
 const storage = multer.diskStorage({
   destination: uploadDir,
   filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${file.originalname}`;
-    cb(null, uniqueName);
+    cb(null, `${Date.now()}-${file.originalname}`);
   },
 });
 
@@ -84,116 +80,96 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 16 * 1024 * 1024 * 1024 }, // 16GB
+  limits: { fileSize: 16 * 1024 * 1024 * 1024 }, // Her bir dosya için sınır (16GB)
 });
 
 // Toplam dosya boyutunu kontrol eden middleware
 const checkTotalFileSize = async (req, res, next) => {
-  const maxSize = 16 * 1024 * 1024 * 1024; // 16GB
+  const maxSize = 16 * 1024 * 1024 * 1024; // Toplam boyut sınırı (16GB)
   let currentTotalSize = 0;
 
   try {
-    const dir = await fs.promises.opendir(uploadDir);
-    for await (const dirent of dir) {
-      if (dirent.isFile()) {
-        const stats = await fs.promises.stat(path.join(uploadDir, dirent.name));
-        currentTotalSize += stats.size;
-      }
+    const files = await fs.promises.readdir(uploadDir);
+    for (const file of files) {
+      const stats = await fs.promises.stat(path.join(uploadDir, file));
+      currentTotalSize += stats.size;
     }
 
     const contentLength = parseInt(req.headers["content-length"] || "0", 10);
 
     if (currentTotalSize + contentLength > maxSize) {
-      return res.status(413).send({ message: "Toplam dosya boyutu sınırı aşıldı (maksimum 16GB)." });
+      return res.status(413).send({
+        message:
+          "Toplam dosya boyutu sınırı aşıldı (maksimum 16GB). Yeni dosya yüklenemez.",
+      });
     }
 
+    // Dosya yükleme işlemi için özel timeout
     req.setTimeout(6 * 60 * 60 * 1000); // 6 saat
     next();
   } catch (error) {
     console.error("Toplam dosya boyutu kontrolü sırasında hata:", error);
-    res.status(500).send({ message: "Sunucu hatası: Toplam boyut kontrolü yapılamadı." });
+    return res
+      .status(500)
+      .send({ message: "Sunucu hatası: Toplam boyut kontrolü yapılamadı." });
   }
 };
 
-let isUploading = false;
-
+let isUploading = false; // Yükleme durumunu takip etmek için
+let lastTime = Date.now(); // Dosya yükleme hızını hesaplama
+let lastBytes = 0;
+const calculateSpeed = (currentChunkLength) => {
+  const currentTime = Date.now();
+  const timeDiff = (currentTime - lastTime) / 1000;
+  if (timeDiff > 0) {
+    const speed = (currentChunkLength - lastBytes) / timeDiff;
+    lastTime = currentTime;
+    lastBytes = currentChunkLength;
+    return Math.round(speed / 1024);
+  }
+  return 0
+};
 app.post("/upload", checkTotalFileSize, (req, res) => {
   if (isUploading) {
     return res.status(400).send({ message: "Şu anda başka bir yükleme işlemi devam ediyor." });
   }
   isUploading = true;
-  io.emit("upload-start");
-
-  const busboy = new Busboy({ headers: req.headers });
-  const totalBytes = parseInt(req.headers["content-length"], 10);
+  io.emit("upload-start"); // Yükleme başladığını diğer kullanıcılara bildir
   let uploadedBytes = 0;
-
-  req.on("close", () => {
-    if (uploadedBytes < totalBytes) {
-      console.warn("Bağlantı kesildi. Yükleme tamamlanamadı.");
+  try {
+    upload.single("video")(req, res, (err) => {
       isUploading = false;
       io.emit("upload-end");
-    }
-  });
+      if (err) {
+        console.error("Yükleme hatası:", err.message);
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).send({ message: "Dosya boyutu sınırı aşıldı (maksimum 16GB)." });
+        }
+        return res.status(400).send({ message: `Yükleme hatası: ${err.message}` });
+      }
+      if (!req.file) {
+        return res.status(400).send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
+      }
+      console.log("Dosya başarıyla yüklendi:", req.file.filename);
+      res.status(200).send({
+        message: "Dosya başarıyla yüklendi!",
+        filename: req.file.filename,
+      });
+    });
 
-  busboy.on("file", (fieldname, file, filename) => {
-    const saveTo = path.join(uploadDir, `${Date.now()}-${filename}`);
-    const writeStream = fs.createWriteStream(saveTo);
-
-    file.pipe(writeStream);
-    file.on("data", (chunk) => {
+    req.on('data', (chunk) => {
       uploadedBytes += chunk.length;
-      const progress = Math.round((uploadedBytes / totalBytes) * 100);
-      const remaining = Math.round(100 - progress);
-      io.emit("upload-progress", { progress, remaining, speed: calculateSpeed(uploadedBytes) });
+      const totalBytes = parseInt(req.headers['content-length'], 10);
+      const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
+      io.emit("upload-progress", { progress: Math.round(progress), speed: calculateSpeed(chunk.length) });
     });
-
-    file.on("end", () => {
-      console.log("Dosya alındı:", filename);
-    });
-
-    writeStream.on("finish", () => {
-      isUploading = false;
-      io.emit("upload-end");
-      res.status(200).send({ message: "Dosya başarıyla yüklendi!", filename });
-    });
-
-    writeStream.on("error", (err) => {
-      console.error("Dosya yazma hatası:", err.message);
-      isUploading = false;
-      io.emit("upload-end");
-      res.status(500).send({ message: "Dosya kaydedilemedi." });
-    });
-  });
-
-  busboy.on("error", (err) => {
-    console.error("Busboy hatası:", err.message);
+  } catch (error) {
     isUploading = false;
     io.emit("upload-end");
-    res.status(500).send({ message: "Yükleme sırasında bir hata oluştu." });
-  });
-  req.pipe(busboy);
-
-  const calculateSpeed = (() => {
-    let lastTime = Date.now();
-    let lastUploadedBytes = 0;
-
-    return (uploadedBytes) => {
-      const currentTime = Date.now();
-      const elapsed = (currentTime - lastTime) / 1000;
-      const bytesDiff = Math.max(uploadedBytes - lastUploadedBytes, 0);
-
-      if (elapsed > 0) {
-        const speed = bytesDiff / elapsed;
-        lastTime = currentTime;
-        lastUploadedBytes = uploadedBytes;
-        return Math.round(speed / 1024); // KB/s
-      }
-      return 0;
-    };
-  })();
+    console.error("Video yükleme sırasında bir hata oluştu:", error);
+    res.status(500).send({ message: "Sunucu hatası: Video yüklenemedi." });
+  }
 });
-
 
 // Video silme endpoint'i
 app.delete("/videos/:filename", async (req, res) => {
@@ -288,6 +264,16 @@ io.on("connection", (socket) => {
     socket.emit("video-state", videoState);
 
     // Mevcut video dosya listesini gönder
+    const videoDir = path.join(__dirname, "videos");
+    fs.readdir(videoDir, (err, files) => {
+      if (err) {
+        console.error("Video dizini okunurken hata:", err);
+        return;
+      }
+      socket.emit("available-videos", files);
+    });
+
+    // Mevcut video dosya listesini gönder
     const sendAvailableVideos = () => {
       fs.readdir(uploadDir, (err, files) => {
         if (err) {
@@ -302,6 +288,7 @@ io.on("connection", (socket) => {
 
     // Mevcut yükleme durumunu gönder
     socket.emit("upload-status", isUploading);
+
   });
 
   // Video kontrol olayları
