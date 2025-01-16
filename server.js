@@ -249,7 +249,7 @@ io.on("connection", (socket) => {
     }
 
     connectedUsers++;
-    users[socket.id] = { username, id: socket.id };
+    users[socket.id] = { username, id: socket.id, hasAudio: false, hasVideo: false };
     console.log("Kullanıcı bağlandı:", username, socket.id);
 
     // Mevcut kullanıcıları tüm kullanıcılara gönder
@@ -293,19 +293,31 @@ io.on("connection", (socket) => {
   });
 
   // Kullanıcı medya akışını başlattığında
-  socket.on("start-media-stream", ({ userId, streamId }) => {
-    mediaStreams[userId] = streamId;
-    console.log(`Kullanıcı ${userId} medya akışını başlattı: ${streamId}`);
+  socket.on("start-media-stream", ({ userId, hasAudio, hasVideo }) => {
+    mediaStreams[userId] = { hasAudio, hasVideo };
+    if (users[userId]) {
+      users[userId].hasAudio = hasAudio;
+      users[userId].hasVideo = hasVideo;
+    }
+    console.log(
+      `Kullanıcı ${userId} medya akışını başlattı. Ses: ${hasAudio}, Video: ${hasVideo}`
+    );
     // Diğer kullanıcıya bu kullanıcının medya akışını başlattığını bildir
-    socket.broadcast.emit("user-media-stream-started", { userId, streamId });
+    socket.broadcast.emit("user-media-stream-started", {
+      userId,
+      hasAudio,
+      hasVideo,
+    });
   });
 
-  // Başka bir kullanıcının medya akışını almayı talep ettiğinde
+  // Başka bir kullanıcının medya akışını almayı talep ettiğinde (Gerekli değil ama tutulabilir)
   socket.on("request-remote-stream", (targetUserId) => {
+    // Sunucu bu isteği aldığında, hedef kullanıcının medya özelliklerini (ses/video var mı)
+    // isteyene bildirebilir. Ancak gerçek medya akışı için WebRTC P2P devam eder.
     if (mediaStreams[targetUserId]) {
       socket.emit("remote-stream-ready", {
         userId: targetUserId,
-        streamId: mediaStreams[targetUserId],
+        stream: null, // Gerçek akış değil, sadece bilgi
       });
     } else {
       socket.emit("remote-stream-unavailable", targetUserId);
@@ -351,7 +363,7 @@ io.on("connection", (socket) => {
     io.emit("video-state", videoState);
   });
 
-  // WebRTC Sinyalizasyon olayları (Şimdilik P2P kalıyor, media relay için güncellenecek)
+  // WebRTC Sinyalizasyon olayları (Şimdilik P2P kalıyor)
   socket.on("offer", async (data) => {
     try {
       const { target, offer } = data;
@@ -360,7 +372,6 @@ io.on("connection", (socket) => {
         return;
       }
       await io.to(target).emit("offer", { from: socket.id, offer });
-
     } catch (error) {
       console.error("Offer olayı sırasında bir hata oluştu:", error);
       socket.emit("error", `Offer sırasında bir hata oluştu : ${error.message}`);
