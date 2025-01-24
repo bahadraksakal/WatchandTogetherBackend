@@ -1,3 +1,4 @@
+// Backend kodları (server.js veya index.js dosyanız)
 const express = require("express");
 const https = require("https");
 const cors = require("cors");
@@ -166,6 +167,15 @@ let videoState = {
   currentVideo: null,
 };
 
+// **Yeni: STUN Sunucu Konfigürasyonu**
+const iceServers = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+];
+
 io.on("connection", (socket) => {
   console.log(`Yeni bir soket bağlandı: ${socket.id}`);
 
@@ -230,6 +240,8 @@ io.on("connection", (socket) => {
         });
       }
     });
+    // **Yeni: STUN sunucu bilgilerini gönder**
+    socket.emit("ice-servers", iceServers);
   });
 
   socket.on("toggle-media", ({ audio, video }) => {
@@ -290,6 +302,19 @@ io.on("connection", (socket) => {
       io.to(SERVER_ROOM).emit("user-left", socket.id);
       socket.leave(SERVER_ROOM); // Kullanıcı ayrıldığında odadan çık
     }
+  });
+
+  // **Yeni: WebRTC Signaling Olayları**
+  socket.on('call-user', (data) => {
+    io.to(data.to).emit('incoming-call', { signal: data.signal, from: data.from });
+  });
+
+  socket.on('answer-call', (data) => {
+    io.to(data.to).emit('call-accepted', data.signal);
+  });
+
+  socket.on('ice-candidate', (data) => {
+    io.to(data.to).emit('ice-candidate', data.candidate);
   });
 });
 
