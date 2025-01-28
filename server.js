@@ -11,8 +11,14 @@ const app = express();
 
 // HTTPS Sertifikaları (Kendi yolunuzu kullanın)
 const credentials = {
-  key: fs.readFileSync("/etc/letsencrypt/live/watchtogether.duckdns.org/privkey.pem", "utf8"),
-  cert: fs.readFileSync("/etc/letsencrypt/live/watchtogether.duckdns.org/fullchain.pem", "utf8"),
+  key: fs.readFileSync(
+    "/etc/letsencrypt/live/watchtogether.duckdns.org/privkey.pem",
+    "utf8"
+  ),
+  cert: fs.readFileSync(
+    "/etc/letsencrypt/live/watchtogether.duckdns.org/fullchain.pem",
+    "utf8"
+  ),
 };
 
 const server = https.createServer(credentials, app);
@@ -57,7 +63,12 @@ const fileFilter = (req, file, cb) => {
   if (allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error("Geçersiz dosya formatı. Sadece MP4, AVI ve MKV formatları desteklenir."), false);
+    cb(
+      new Error(
+        "Geçersiz dosya formatı. Sadece MP4, AVI ve MKV formatları desteklenir."
+      ),
+      false
+    );
   }
 };
 
@@ -78,13 +89,18 @@ const checkTotalFileSize = async (req, res, next) => {
     }
     const contentLength = parseInt(req.headers["content-length"] || "0", 10);
     if (currentTotalSize + contentLength > maxSize) {
-      return res.status(413).send({ message: "Toplam dosya boyutu sınırı aşıldı (maksimum 16GB). Yeni dosya yüklenemez." });
+      return res.status(413).send({
+        message:
+          "Toplam dosya boyutu sınırı aşıldı (maksimum 16GB). Yeni dosya yüklenemez.",
+      });
     }
     req.setTimeout(6 * 60 * 60 * 1000);
     next();
   } catch (error) {
     console.error("Toplam dosya boyutu kontrolü sırasında hata:", error);
-    return res.status(500).send({ message: "Sunucu hatası: Toplam boyut kontrolü yapılamadı." });
+    return res
+      .status(500)
+      .send({ message: "Sunucu hatası: Toplam boyut kontrolü yapılamadı." });
   }
 };
 
@@ -105,7 +121,9 @@ const calculateSpeed = (currentChunkLength) => {
 
 app.post("/upload", checkTotalFileSize, (req, res) => {
   if (isUploading) {
-    return res.status(400).send({ message: "Şu anda başka bir yükleme işlemi devam ediyor." });
+    return res
+      .status(400)
+      .send({ message: "Şu anda başka bir yükleme işlemi devam ediyor." });
   }
   isUploading = true;
   io.emit("upload-start");
@@ -116,20 +134,30 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
       io.emit("upload-end");
       if (err) {
         console.error("Yükleme hatası:", err.message);
-        return res.status(400).send({ message: `Yükleme hatası: ${err.message}` });
+        return res
+          .status(400)
+          .send({ message: `Yükleme hatası: ${err.message}` });
       }
       if (!req.file) {
-        return res.status(400).send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
+        return res
+          .status(400)
+          .send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
       }
       console.log("Dosya başarıyla yüklendi:", req.file.filename);
-      res.status(200).send({ message: "Dosya başarıyla yüklendi!", filename: req.file.filename });
+      res.status(200).send({
+        message: "Dosya başarıyla yüklendi!",
+        filename: req.file.filename,
+      });
     });
 
-    req.on('data', (chunk) => {
+    req.on("data", (chunk) => {
       uploadedBytes += chunk.length;
-      const totalBytes = parseInt(req.headers['content-length'], 10);
+      const totalBytes = parseInt(req.headers["content-length"], 10);
       const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
-      io.emit("upload-progress", { progress: Math.round(progress), speed: calculateSpeed(chunk.length) });
+      io.emit("upload-progress", {
+        progress: Math.round(progress),
+        speed: calculateSpeed(chunk.length),
+      });
     });
   } catch (error) {
     isUploading = false;
@@ -167,27 +195,42 @@ let videoState = {
   currentVideo: null,
 };
 
-// **Yeni: STUN Sunucu Konfigürasyonu**
 const iceServers = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
+  {
+    urls: [
+      "turn:watchtogether.duckdns.org:3478?transport=tcp",
+      "turn:watchtogether.duckdns.org:5349?transport=tcp",
+      "turn:watchtogether.duckdns.org:3478?transport=udp",
+    ],
+    username: "bahadr",
+    credential: "bahadr12345",
+  },
 ];
 
 io.on("connection", (socket) => {
   console.log(`Yeni bir soket bağlandı: ${socket.id}`);
 
   socket.onAny((eventName, ...args) => {
-    const dataSnippet = args.length > 0 ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) + "..." : "";
-    console.log(`Gelen Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`);
+    const dataSnippet =
+      args.length > 0
+        ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) +
+          "..."
+        : "";
+    console.log(
+      `Gelen Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`
+    );
   });
 
   const originalEmit = socket.emit;
   socket.emit = function (eventName, ...args) {
-    const dataSnippet = args.length > 0 ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) + "..." : "";
-    console.log(`Giden Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`);
+    const dataSnippet =
+      args.length > 0
+        ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) +
+          "..."
+        : "";
+    console.log(
+      `Giden Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`
+    );
     originalEmit.apply(socket, [eventName, ...args]);
   };
 
@@ -204,7 +247,12 @@ io.on("connection", (socket) => {
     }
 
     connectedUsers++;
-    users[socket.id] = { username, id: socket.id, hasAudio: false, hasVideo: false };
+    users[socket.id] = {
+      username,
+      id: socket.id,
+      hasAudio: false,
+      hasVideo: false,
+    };
     console.log("Kullanıcı bağlandı:", username, socket.id);
 
     socket.join(SERVER_ROOM); // Kullanıcıyı otomatik olarak server odasına ekle
@@ -213,7 +261,9 @@ io.on("connection", (socket) => {
     io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
 
     // Yeni kullanıcının katıldığını diğerlerine bildir
-    socket.broadcast.to(SERVER_ROOM).emit("user-joined", { username, id: socket.id });
+    socket.broadcast
+      .to(SERVER_ROOM)
+      .emit("user-joined", { username, id: socket.id });
 
     // Mevcut video durumunu gönder
     socket.emit("video-state", videoState);
@@ -231,12 +281,12 @@ io.on("connection", (socket) => {
     socket.emit("upload-status", isUploading);
 
     // Diğer kullanıcıların medya durumlarını yeni bağlanan kullanıcıya gönder
-    Object.keys(users).forEach(userId => {
+    Object.keys(users).forEach((userId) => {
       if (userId !== socket.id) {
         socket.emit("remote-media-toggled", {
           socketId: users[userId].id,
           audio: users[userId].hasAudio,
-          video: users[userId].hasVideo
+          video: users[userId].hasVideo,
         });
       }
     });
@@ -245,12 +295,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("toggle-media", ({ audio, video }) => {
-    console.log(`Kullanıcı medya durumunu değiştirdi - Socket ID: ${socket.id}, Audio: ${audio}, Video: ${video}`);
+    console.log(
+      `Kullanıcı medya durumunu değiştirdi - Socket ID: ${socket.id}, Audio: ${audio}, Video: ${video}`
+    );
     if (users[socket.id]) {
       users[socket.id].hasAudio = audio;
       users[socket.id].hasVideo = video;
       // Tüm bağlı kullanıcılara bildir (kendisi hariç)
-      socket.broadcast.to(SERVER_ROOM).emit("remote-media-toggled", { socketId: socket.id, audio, video });
+      socket.broadcast
+        .to(SERVER_ROOM)
+        .emit("remote-media-toggled", { socketId: socket.id, audio, video });
     }
   });
 
@@ -305,22 +359,27 @@ io.on("connection", (socket) => {
   });
 
   // **Yeni: WebRTC Signaling Olayları**
-  socket.on('call-user', (data) => {
-    io.to(data.to).emit('incoming-call', { signal: data.signal, from: data.from });
+  socket.on("call-user", (data) => {
+    io.to(data.to).emit("incoming-call", {
+      signal: data.signal,
+      from: data.from,
+    });
   });
 
-  socket.on('answer-call', (data) => {
-    io.to(data.to).emit('call-accepted', data.signal);
+  socket.on("answer-call", (data) => {
+    io.to(data.to).emit("call-accepted", data.signal);
   });
 
-  socket.on('ice-candidate', (data) => {
-    io.to(data.to).emit('ice-candidate', data.candidate);
+  socket.on("ice-candidate", (data) => {
+    io.to(data.to).emit("ice-candidate", data.candidate);
   });
 });
 
 app.use((err, req, res, next) => {
   console.error("Express Error Handler:", err);
-  res.status(500).json({ error: "Sunucuda bir hata oluştu. Detaylar konsolda yer alıyor." });
+  res
+    .status(500)
+    .json({ error: "Sunucuda bir hata oluştu. Detaylar konsolda yer alıyor." });
 });
 
 const PORT = 8443;
