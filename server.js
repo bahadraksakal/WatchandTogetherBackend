@@ -198,7 +198,6 @@ let videoState = {
 const iceServers = [
   {
     urls: [
-      "stun:stun.l.google.com:19302",
       "turn:35.179.115.239:3478?transport=udp",
       "turn:35.179.115.239:3478?transport=tcp",
       "turns:watchtogetherturn.duckdns.org:5349?transport=udp",
@@ -209,6 +208,8 @@ const iceServers = [
     realm: "watchtogetherturn", // **REALM'i buraya ekleyin ve `watchtogetherturn` olarak ayarlayın.**
   },
 ];
+
+const activeCalls = {};
 
 io.on("connection", (socket) => {
   console.log(`Yeni bir soket bağlandı: ${socket.id}`);
@@ -362,19 +363,16 @@ io.on("connection", (socket) => {
   });
 
   // **Yeni: WebRTC Signaling Olayları**
-  socket.on("call-user", (data) => {
-    io.to(data.to).emit("incoming-call", {
-      signal: data.signal,
-      from: data.from,
-    });
+  socket.on("initiate-call", ({ to }) => {
+    if (!activeCalls[to]) {
+      activeCalls[to] = socket.id;
+      io.to(to).emit("incoming-call", { from: socket.id });
+    }
   });
 
-  socket.on("answer-call", (data) => {
-    io.to(data.to).emit("call-accepted", data.signal);
-  });
-
-  socket.on("ice-candidate", (data) => {
-    io.to(data.to).emit("ice-candidate", data.candidate);
+  socket.on("end-call", ({ to }) => {
+    delete activeCalls[to];
+    io.to(to).emit("call-ended");
   });
 });
 
