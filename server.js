@@ -37,10 +37,7 @@ const credentials = {
 
 // CORS yapılandırması
 const corsOptions = {
-  origin:
-    process.env.NODE_ENV === "production"
-      ? process.env.ALLOWED_ORIGINS.split(",")
-      : "*",
+  origin:"*",
   methods: process.env.CORS_METHODS.split(","),
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization", "x-auth-token"],
