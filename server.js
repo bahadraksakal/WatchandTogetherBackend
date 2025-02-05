@@ -27,11 +27,11 @@ app.use(limiter);
 const credentials = {
   key: fs.readFileSync(
     "/etc/letsencrypt/live/watchtogether.duckdns.org/privkey.pem",
-    "utf8",
+    "utf8"
   ),
   cert: fs.readFileSync(
     "/etc/letsencrypt/live/watchtogether.duckdns.org/fullchain.pem",
-    "utf8",
+    "utf8"
   ),
 };
 
@@ -83,9 +83,9 @@ const fileFilter = (req, file, cb) => {
   } else {
     cb(
       new Error(
-        "Geçersiz dosya formatı. Sadece MP4, AVI ve MKV formatları desteklenir.",
+        "Geçersiz dosya formatı. Sadece MP4, AVI ve MKV formatları desteklenir."
       ),
-      false,
+      false
     );
   }
 };
@@ -256,34 +256,66 @@ const handleWebRTCEvents = (socket) => {
           return;
         }
 
-        activeCalls[to] = socket.id;
-        activeCalls[socket.id] = to;
-        io.to(to).emit("incoming-call", { from: socket.id });
+        activeCalls[to] = {
+          id: socket.id,
+          timestamp: Date.now(),
+          type: "pending",
+        };
+
+        activeCalls[socket.id] = {
+          id: to,
+          timestamp: Date.now(),
+          type: "pending",
+        };
+
+        io.to(to).emit("incoming-call", {
+          from: socket.id,
+          username: caller.username,
+        });
+
+        // 30 saniye içinde cevap verilmezse aramayı sonlandır
+        setTimeout(() => {
+          if (activeCalls[socket.id]?.type === "pending") {
+            delete activeCalls[socket.id];
+            delete activeCalls[to];
+            socket.emit("call-timeout");
+            io.to(to).emit("call-missed");
+          }
+        }, 30000);
       } catch (error) {
         console.error("Arama başlatma hatası:", error);
         socket.emit("call-error", "Arama başlatılamadı");
       }
     },
+
     "accept-call": ({ signal, to }) => {
-      io.to(to).emit("call-accepted", { signal, answerId: socket.id });
-    },
-    "ice-candidate": (data) => {
-      if (data.to && activeCalls[socket.id] === data.to) {
-        io.to(data.to).emit("ice-candidate", data.candidate);
-      }
-    },
-    "call-user": ({ signal, to }) => {
-      if (activeCalls[to] === socket.id) {
-        io.to(to).emit("incoming-call", {
+      if (activeCalls[socket.id]?.id === to) {
+        activeCalls[socket.id].type = "active";
+        activeCalls[to].type = "active";
+        io.to(to).emit("call-accepted", {
           signal,
-          from: socket.id,
-          username: users[socket.id]?.username,
+          answerId: socket.id,
         });
       }
     },
+
+    "reject-call": ({ to }) => {
+      if (activeCalls[socket.id]?.id === to) {
+        delete activeCalls[socket.id];
+        delete activeCalls[to];
+        io.to(to).emit("call-rejected");
+      }
+    },
+
+    "ice-candidate": (data) => {
+      if (data.to && activeCalls[socket.id]?.id === data.to) {
+        io.to(data.to).emit("ice-candidate", data.candidate);
+      }
+    },
+
     "end-call": ({ to }) => {
       if (activeCalls[socket.id]) {
-        const targetSocketId = activeCalls[socket.id];
+        const targetSocketId = activeCalls[socket.id].id;
         delete activeCalls[socket.id];
         delete activeCalls[targetSocketId];
         io.to(targetSocketId).emit("call-ended");
@@ -291,16 +323,75 @@ const handleWebRTCEvents = (socket) => {
     },
   };
 
-  for (const eventName in events) {
-    socket.on(eventName, events[eventName]);
+  for (const [event, handler] of Object.entries(events)) {
+    socket.on(event, (...args) => {
+      try {
+        handler(...args);
+      } catch (error) {
+        console.error(`WebRTC event error (${event}):`, error);
+        socket.emit("call-error", "İşlem sırasında bir hata oluştu");
+      }
+    });
   }
+};
+
+// Video senkronizasyon iyileştirmeleri
+const videoStateManager = {
+  state: {
+    isPlaying: false,
+    currentTime: 0,
+    muted: false,
+    volume: 1,
+    currentVideo: null,
+    lastUpdatedBy: null,
+    lastUpdateTime: Date.now(),
+  },
+
+  updateState(newState, socket) {
+    const now = Date.now();
+    if (now - this.state.lastUpdateTime > 500) {
+      this.state = {
+        ...this.state,
+        ...newState,
+        lastUpdatedBy: socket.id,
+        lastUpdateTime: now,
+      };
+      socket.broadcast.to(SERVER_ROOM).emit("video-state", this.state);
+    }
+  },
+
+  handleStateChange(socket) {
+    socket.on("play", (currentTime) => {
+      this.updateState({ isPlaying: true, currentTime }, socket);
+    });
+
+    socket.on("pause", (currentTime) => {
+      this.updateState({ isPlaying: false, currentTime }, socket);
+    });
+
+    socket.on("seek", (time) => {
+      this.updateState({ currentTime: time }, socket);
+    });
+
+    socket.on("volume-change", (volume) => {
+      this.updateState({ volume }, socket);
+    });
+
+    socket.on("mute", () => {
+      this.updateState({ muted: true }, socket);
+    });
+
+    socket.on("unmute", () => {
+      this.updateState({ muted: false }, socket);
+    });
+  },
 };
 
 let connectedUsers = 0;
 io.on("connection", (socket) => {
   connectedUsers++;
   console.log(
-    `Yeni soket bağlandı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`,
+    `Yeni soket bağlandı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
   );
 
   socket.join(SERVER_ROOM);
@@ -439,7 +530,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     connectedUsers--;
     console.log(
-      `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`,
+      `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
     );
     if (users[socket.id]) {
       console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
@@ -459,16 +550,64 @@ io.on("connection", (socket) => {
     }
   });
 
-  let heartbeat = setInterval(() => {
-    socket.emit("ping");
-  }, 25000);
+  let lastPing = Date.now();
+
+  const checkConnection = setInterval(() => {
+    if (Date.now() - lastPing > 30000) {
+      console.log(`Bağlantı zaman aşımı: ${socket.id}`);
+      socket.disconnect(true);
+    }
+  }, 10000);
 
   socket.on("pong", () => {
-    console.log(`Heartbeat from ${socket.id}`);
+    lastPing = Date.now();
   });
+
+  let lastVideoUpdate = 0;
+  socket.on("video-state-update", (state) => {
+    const now = Date.now();
+    if (now - lastVideoUpdate > 500) {
+      // Rate limiting
+      lastVideoUpdate = now;
+      videoState = { ...state, lastUpdatedBy: socket.id };
+      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
+    }
+  });
+
+  socket.on("error", (error) => {
+    console.error(`Socket hatası (${socket.id}):`, error);
+    socket.emit("error-occurred", {
+      message: "Bir hata oluştu, lütfen sayfayı yenileyin.",
+    });
+  });
+
+  videoStateManager.handleStateChange(socket);
 
   handleWebRTCEvents(socket);
 });
+
+// Dosya temizleme fonksiyonu
+const cleanupOldFiles = async () => {
+  try {
+    const files = await fs.promises.readdir(uploadDir);
+    const now = Date.now();
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+
+    for (const file of files) {
+      const filePath = path.join(uploadDir, file);
+      const stats = await fs.promises.stat(filePath);
+      if (now - stats.mtime.getTime() > ONE_DAY) {
+        await fs.promises.unlink(filePath);
+        console.log(`Eski dosya silindi: ${file}`);
+      }
+    }
+  } catch (error) {
+    console.error("Dosya temizleme hatası:", error);
+  }
+};
+
+// Her gün dosya temizliği yap
+setInterval(cleanupOldFiles, 24 * 60 * 60 * 1000);
 
 app.use((err, req, res, next) => {
   console.error("Hata:", err.stack);
@@ -480,6 +619,34 @@ app.use((err, req, res, next) => {
         : err.message,
   });
 });
+
+// Global hata yönetimi
+process.on("uncaughtException", (error) => {
+  console.error("Yakalanmamış hata:", error);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("İşlenmeyen promise reddi:", reason);
+});
+
+// Güvenlik önlemleri
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  next();
+});
+
+// API rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: {
+    error: "Çok fazla istek gönderildi, lütfen daha sonra tekrar deneyin.",
+  },
+});
+
+app.use("/api/", apiLimiter);
 
 const PORT = 8443;
 server.listen(PORT, () => {
