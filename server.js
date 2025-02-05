@@ -6,6 +6,7 @@ const { Server } = require("socket.io");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
 
 const app = express();
 
@@ -262,13 +263,19 @@ const handleWebRTCEvents = (socket) => {
 let connectedUsers = 0;
 io.on("connection", (socket) => {
   connectedUsers++;
-  socket.join(SERVER_ROOM); // Odaya giriş
+  console.log(
+    `Yeni soket bağlandı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
+  );
+
+  socket.join(SERVER_ROOM);
 
   socket.on("user-join", (username) => {
-    if (connectedUsers >= MAX_USERS) {
+    if (connectedUsers > MAX_USERS) {
       socket.emit("server-full");
       socket.disconnect(true);
-      console.log("Sunucu dolu, kullanıcı ayrıldı:", username, socket.id);  
+      console.log(
+        `Bağlantı reddedildi. Sunucu dolu. Kullanıcı: ${username}, Soket: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
+      );
       return;
     }
     users[socket.id] = {
@@ -279,10 +286,9 @@ io.on("connection", (socket) => {
     };
     console.log("Kullanıcı bağlandı:", username, socket.id);
     io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
-    io.to(SERVER_ROOM).emit("user-joined", { username, id: socket.id }); // Kullanıcı adı gönderiliyor
+    io.to(SERVER_ROOM).emit("user-joined", { username, id: socket.id });
   });
 
-  // Video listesini gönder
   socket.on("get-videos", () => {
     fs.readdir(uploadDir, (err, files) => {
       if (err) {
@@ -293,10 +299,8 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Mevcut yükleme durumunu gönder
   socket.emit("upload-status", isUploading);
 
-  // Diğer kullanıcıların medya durumlarını yeni bağlanan kullanıcıya gönder
   Object.keys(users).forEach((userId) => {
     if (userId !== socket.id) {
       socket.emit("remote-media-toggled", {
@@ -306,14 +310,13 @@ io.on("connection", (socket) => {
       });
     }
   });
-  // **Yeni: STUN sunucu bilgilerini gönder**
+
   socket.emit("ice-servers", iceServers);
 
   socket.on("toggle-media", ({ audio, video }) => {
     users[socket.id].hasAudio = audio;
     users[socket.id].hasVideo = video;
 
-    // Tüm kullanıcılara yeni durumu ilet
     io.to(SERVER_ROOM).emit("remote-media-updated", {
       userId: socket.id,
       audio,
@@ -321,7 +324,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Video kontrol olayları (aynı kalır)
   socket.on("play", (currentTime) => {
     if (videoState.lastUpdatedBy !== socket.id) {
       videoState = {
@@ -381,13 +383,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    connectedUsers--;
+    console.log(
+      `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
+    );
     if (users[socket.id]) {
       console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
       delete users[socket.id];
-      connectedUsers = Object.keys(users).length;
       io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
       io.to(SERVER_ROOM).emit("user-left", socket.id);
-      socket.leave(SERVER_ROOM); // Kullanıcı ayrıldığında odadan çık
+      socket.leave(SERVER_ROOM);
     }
   });
 
