@@ -37,9 +37,10 @@ app.get("/health", (req, res) => {
 app.use(cors());
 app.use(express.json());
 
-// HTTP'den HTTPS'ye Yönlendirme
+// HTTP'den HTTPS'ye Yönlendirme (x-forwarded-proto kontrolü eklendi)
 app.use((req, res, next) => {
-  if (!req.secure) {
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  if (!req.secure && (!forwardedProto || forwardedProto !== "https")) {
     return res.redirect(`https://${req.headers.host}${req.url}`);
   }
   next();
@@ -106,19 +107,6 @@ const checkTotalFileSize = async (req, res, next) => {
 };
 
 let isUploading = false;
-let lastTime = Date.now();
-let lastBytes = 0;
-const calculateSpeed = (currentChunkLength) => {
-  const currentTime = Date.now();
-  const timeDiff = (currentTime - lastTime) / 1000;
-  if (timeDiff > 0) {
-    const speed = (currentChunkLength - lastBytes) / timeDiff;
-    lastTime = currentTime;
-    lastBytes = currentChunkLength;
-    return Math.round(speed / 1024);
-  }
-  return 0;
-};
 
 app.post("/upload", checkTotalFileSize, (req, res) => {
   if (isUploading) {
@@ -129,43 +117,47 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
   isUploading = true;
   io.emit("upload-start");
   let uploadedBytes = 0;
-  try {
-    upload.single("video")(req, res, (err) => {
-      isUploading = false;
-      io.emit("upload-end");
-      if (err) {
-        console.error("Yükleme hatası:", err.message);
-        return res
-          .status(400)
-          .send({ message: `Yükleme hatası: ${err.message}` });
-      }
-      if (!req.file) {
-        return res
-          .status(400)
-          .send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
-      }
-      console.log("Dosya başarıyla yüklendi:", req.file.filename);
-      res.status(200).send({
-        message: "Dosya başarıyla yüklendi!",
-        filename: req.file.filename,
-      });
-    });
+  let lastUpdateTime = Date.now();
+  let lastUpdateBytes = 0;
 
-    req.on("data", (chunk) => {
-      uploadedBytes += chunk.length;
-      const totalBytes = parseInt(req.headers["content-length"], 10);
-      const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
-      io.emit("upload-progress", {
-        progress: Math.round(progress),
-        speed: calculateSpeed(chunk.length),
-      });
+  req.on("data", (chunk) => {
+    uploadedBytes += chunk.length;
+    const now = Date.now();
+    const timeDiff = (now - lastUpdateTime) / 1000;
+    let speed = 0;
+    if (timeDiff > 0) {
+      speed = Math.round((uploadedBytes - lastUpdateBytes) / timeDiff / 1024);
+    }
+    lastUpdateTime = now;
+    lastUpdateBytes = uploadedBytes;
+    const totalBytes = parseInt(req.headers["content-length"] || "0", 10);
+    const progress = totalBytes > 0 ? (uploadedBytes / totalBytes) * 100 : 0;
+    io.emit("upload-progress", {
+      progress: Math.round(progress),
+      speed: speed,
     });
-  } catch (error) {
+  });
+
+  upload.single("video")(req, res, (err) => {
     isUploading = false;
     io.emit("upload-end");
-    console.error("Video yükleme sırasında bir hata oluştu:", error);
-    res.status(500).send({ message: "Sunucu hatası: Video yüklenemedi." });
-  }
+    if (err) {
+      console.error("Yükleme hatası:", err.message);
+      return res
+        .status(400)
+        .send({ message: `Yükleme hatası: ${err.message}` });
+    }
+    if (!req.file) {
+      return res
+        .status(400)
+        .send({ message: "Lütfen geçerli bir video dosyası yükleyin." });
+    }
+    console.log("Dosya başarıyla yüklendi:", req.file.filename);
+    res.status(200).send({
+      message: "Dosya başarıyla yüklendi!",
+      filename: req.file.filename,
+    });
+  });
 });
 
 app.delete("/videos/:filename", async (req, res) => {
