@@ -382,6 +382,28 @@ io.on("connection", (socket) => {
     io.to(SERVER_ROOM).emit("video-state", videoState);
   });
 
+  socket.on("audio-toggle", (audio) => {
+    if (users[socket.id]) {
+      users[socket.id].hasAudio = audio;
+      io.to(SERVER_ROOM).emit("remote-media-updated", {
+        userId: socket.id,
+        audio,
+        video: users[socket.id].hasVideo,
+      });
+    }
+  });
+
+  socket.on("video-toggle", (video) => {
+    if (users[socket.id]) {
+      users[socket.id].hasVideo = video;
+      io.to(SERVER_ROOM).emit("remote-media-updated", {
+        userId: socket.id,
+        audio: users[socket.id].hasAudio,
+        video,
+      });
+    }
+  });
+
   socket.on("disconnect", () => {
     connectedUsers--;
     console.log(
