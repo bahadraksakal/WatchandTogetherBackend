@@ -211,6 +211,42 @@ const iceServers = [
 
 const activeCalls = {};
 
+const handleWebRTCEvents = (socket) => {
+  const events = {
+    "initiate-call": ({ to }) => {
+      if (!activeCalls[to] && !activeCalls[socket.id]) {
+        activeCalls[to] = socket.id;
+        activeCalls[socket.id] = to;
+        io.to(to).emit("incoming-call", { from: socket.id });
+      }
+    },
+    "end-call": ({ to }) => {
+      if (activeCalls[to]) {
+        io.to(activeCalls[to]).emit("call-ended");
+        io.to(to).emit("call-ended");
+        delete activeCalls[to];
+      }
+    },
+    "ice-candidate": (data) => {
+      io.to(data.to).emit("ice-candidate", data.candidate);
+    },
+  };
+
+  Object.entries(events).forEach(([eventName, handler]) => {
+    socket.on(eventName, (...args) => {
+      try {
+        handler(...args);
+      } catch (error) {
+        console.error(`${eventName} hatası:`, error);
+        socket.emit("webrtc-error", {
+          event: eventName,
+          message: error.message,
+        });
+      }
+    });
+  });
+};
+
 io.on("connection", (socket) => {
   console.log(`Yeni bir soket bağlandı: ${socket.id}`);
 
@@ -299,17 +335,13 @@ io.on("connection", (socket) => {
   });
 
   socket.on("toggle-media", ({ audio, video }) => {
-    console.log(
-      `Kullanıcı medya durumunu değiştirdi - Socket ID: ${socket.id}, Audio: ${audio}, Video: ${video}`
-    );
-    if (users[socket.id]) {
-      users[socket.id].hasAudio = audio;
-      users[socket.id].hasVideo = video;
-      // Tüm bağlı kullanıcılara bildir (kendisi hariç)
-      socket.broadcast
-        .to(SERVER_ROOM)
-        .emit("remote-media-toggled", { socketId: socket.id, audio, video });
-    }
+    users[socket.id].hasAudio = audio;
+    users[socket.id].hasVideo = video;
+    io.to(SERVER_ROOM).emit("remote-media-toggled", {
+      socketId: socket.id,
+      audio,
+      video,
+    });
   });
 
   // Video kontrol olayları (aynı kalır)
@@ -362,18 +394,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // **Yeni: WebRTC Signaling Olayları**
-  socket.on("initiate-call", ({ to }) => {
-    if (!activeCalls[to]) {
-      activeCalls[to] = socket.id;
-      io.to(to).emit("incoming-call", { from: socket.id });
-    }
-  });
-
-  socket.on("end-call", ({ to }) => {
-    delete activeCalls[to];
-    io.to(to).emit("call-ended");
-  });
+  handleWebRTCEvents(socket);
 });
 
 app.use((err, req, res, next) => {
