@@ -268,6 +268,7 @@ io.on("connection", (socket) => {
     if (connectedUsers >= MAX_USERS) {
       socket.emit("server-full");
       socket.disconnect(true);
+      console.log("Sunucu dolu, kullanıcı ayrıldı:", username, socket.id);  
       return;
     }
     users[socket.id] = {
