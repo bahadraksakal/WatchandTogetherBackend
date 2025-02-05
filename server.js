@@ -214,6 +214,14 @@ const activeCalls = {};
 const handleWebRTCEvents = (socket) => {
   const events = {
     "initiate-call": ({ to }) => {
+      const caller = users[socket.id];
+      const callee = users[to];
+
+      if (!caller.hasAudio && !caller.hasVideo) {
+        socket.emit("call-error", "En az bir medya cihazı etkin olmalıdır");
+        return;
+      }
+
       if (!activeCalls[to] && !activeCalls[socket.id]) {
         activeCalls[to] = socket.id;
         activeCalls[socket.id] = to;
@@ -228,7 +236,24 @@ const handleWebRTCEvents = (socket) => {
       }
     },
     "ice-candidate": (data) => {
-      io.to(data.to).emit("ice-candidate", data.candidate);
+      if (data.to && activeCalls[socket.id] === data.to) {
+        io.to(data.to).emit("ice-candidate", data.candidate);
+      }
+    },
+    "call-user": async ({ signal, to }) => {
+      const targetSocket = io.sockets.sockets.get(to);
+      if (targetSocket) {
+        targetSocket.emit("incoming-call", {
+          from: socket.id,
+          signal,
+        });
+      }
+    },
+    "accept-call": async ({ signal, to }) => {
+      const targetSocket = io.sockets.sockets.get(to);
+      if (targetSocket) {
+        targetSocket.emit("call-accepted", signal);
+      }
     },
   };
 
@@ -290,8 +315,8 @@ io.on("connection", (socket) => {
     users[socket.id] = {
       username,
       id: socket.id,
-      hasAudio: false,
-      hasVideo: false,
+      hasAudio: true,
+      hasVideo: true,
     };
     console.log("Kullanıcı bağlandı:", username, socket.id);
 
@@ -337,8 +362,10 @@ io.on("connection", (socket) => {
   socket.on("toggle-media", ({ audio, video }) => {
     users[socket.id].hasAudio = audio;
     users[socket.id].hasVideo = video;
-    io.to(SERVER_ROOM).emit("remote-media-toggled", {
-      socketId: socket.id,
+
+    // Tüm kullanıcılara yeni durumu ilet
+    io.to(SERVER_ROOM).emit("remote-media-updated", {
+      userId: socket.id,
       audio,
       video,
     });
