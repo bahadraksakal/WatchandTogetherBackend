@@ -1,20 +1,27 @@
 {
-  "name": "video-sync-backend",
+  "name": "watchtogether-backend",
   "version": "1.0.0",
-  "description": "Backend for video synchronization app",
+  "description": "Watch Together Backend Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.js\"",
+    "test": "jest"
   },
   "dependencies": {
-    "busboy": "^1.6.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
     "multer": "^1.4.5-lts.1",
     "socket.io": "^4.7.4"
   },
   "devDependencies": {
-    "nodemon": "^3.0.3"
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.3",
+    "prettier": "^3.2.5"
   }
 }

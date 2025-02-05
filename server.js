@@ -7,26 +7,43 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const rateLimit = require("express-rate-limit");
+const helmet = require("helmet");
 
 const app = express();
+
+// Güvenlik önlemleri
+app.use(helmet());
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 dakika
+  max: 100, // Her IP için maksimum istek sayısı
+});
+
+app.use(limiter);
 
 // HTTPS Sertifikaları (Kendi yolunuzu kullanın)
 const credentials = {
   key: fs.readFileSync(
     "/etc/letsencrypt/live/watchtogether.duckdns.org/privkey.pem",
-    "utf8"
+    "utf8",
   ),
   cert: fs.readFileSync(
     "/etc/letsencrypt/live/watchtogether.duckdns.org/fullchain.pem",
-    "utf8"
+    "utf8",
   ),
 };
 
 const server = https.createServer(credentials, app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin:
+      process.env.NODE_ENV === "production"
+        ? ["https://watchtogether.duckdns.org"]
+        : "*",
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
+    credentials: true,
   },
 });
 
@@ -34,7 +51,6 @@ app.get("/health", (req, res) => {
   res.status(200).send("Sunucu çalışıyor!");
 });
 
-app.use(cors());
 app.use(express.json());
 
 // HTTP'den HTTPS'ye Yönlendirme (x-forwarded-proto kontrolü eklendi)
@@ -67,9 +83,9 @@ const fileFilter = (req, file, cb) => {
   } else {
     cb(
       new Error(
-        "Geçersiz dosya formatı. Sadece MP4, AVI ve MKV formatları desteklenir."
+        "Geçersiz dosya formatı. Sadece MP4, AVI ve MKV formatları desteklenir.",
       ),
-      false
+      false,
     );
   }
 };
@@ -108,7 +124,13 @@ const checkTotalFileSize = async (req, res, next) => {
 
 let isUploading = false;
 
-app.post("/upload", checkTotalFileSize, (req, res) => {
+// Video upload geliştirmeleri
+const videoUploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 saat
+  max: 5, // Her IP için maksimum yükleme sayısı
+});
+
+app.post("/upload", videoUploadLimiter, checkTotalFileSize, (req, res) => {
   if (isUploading) {
     return res
       .status(400)
@@ -160,7 +182,16 @@ app.post("/upload", checkTotalFileSize, (req, res) => {
   });
 });
 
-app.delete("/videos/:filename", async (req, res) => {
+// Dosya silme işlemi için güvenlik kontrolü
+const deleteAuth = (req, res, next) => {
+  const authToken = req.headers["x-auth-token"];
+  if (!authToken || authToken !== process.env.DELETE_AUTH_TOKEN) {
+    return res.status(401).json({ message: "Yetkisiz işlem" });
+  }
+  next();
+};
+
+app.delete("/videos/:filename", deleteAuth, async (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(uploadDir, filename);
   try {
@@ -206,18 +237,31 @@ const activeCalls = {};
 const handleWebRTCEvents = (socket) => {
   const events = {
     "initiate-call": ({ to }) => {
-      const caller = users[socket.id];
-      const callee = users[to];
+      try {
+        const caller = users[socket.id];
+        const callee = users[to];
 
-      if (!caller.hasAudio && !caller.hasVideo) {
-        socket.emit("call-error", "En az bir medya cihazı etkin olmalıdır");
-        return;
-      }
+        if (!caller || !callee) {
+          socket.emit("call-error", "Kullanıcı bulunamadı");
+          return;
+        }
 
-      if (!activeCalls[to] && !activeCalls[socket.id]) {
+        if (!caller.hasAudio && !caller.hasVideo) {
+          socket.emit("call-error", "En az bir medya cihazı etkin olmalıdır");
+          return;
+        }
+
+        if (activeCalls[to] || activeCalls[socket.id]) {
+          socket.emit("call-error", "Kullanıcı zaten bir görüşmede");
+          return;
+        }
+
         activeCalls[to] = socket.id;
         activeCalls[socket.id] = to;
         io.to(to).emit("incoming-call", { from: socket.id });
+      } catch (error) {
+        console.error("Arama başlatma hatası:", error);
+        socket.emit("call-error", "Arama başlatılamadı");
       }
     },
     "accept-call": ({ signal, to }) => {
@@ -256,7 +300,7 @@ let connectedUsers = 0;
 io.on("connection", (socket) => {
   connectedUsers++;
   console.log(
-    `Yeni soket bağlandı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
+    `Yeni soket bağlandı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`,
   );
 
   socket.join(SERVER_ROOM);
@@ -395,7 +439,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     connectedUsers--;
     console.log(
-      `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
+      `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`,
     );
     if (users[socket.id]) {
       console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
@@ -415,14 +459,26 @@ io.on("connection", (socket) => {
     }
   });
 
+  let heartbeat = setInterval(() => {
+    socket.emit("ping");
+  }, 25000);
+
+  socket.on("pong", () => {
+    console.log(`Heartbeat from ${socket.id}`);
+  });
+
   handleWebRTCEvents(socket);
 });
 
 app.use((err, req, res, next) => {
-  console.error("Express Error Handler:", err);
-  res
-    .status(500)
-    .json({ error: "Sunucuda bir hata oluştu. Detaylar konsolda yer alıyor." });
+  console.error("Hata:", err.stack);
+  res.status(500).json({
+    error: true,
+    message:
+      process.env.NODE_ENV === "production"
+        ? "Sunucu hatası oluştu"
+        : err.message,
+  });
 });
 
 const PORT = 8443;
