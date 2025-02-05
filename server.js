@@ -273,20 +273,22 @@ io.on("connection", (socket) => {
     if (connectedUsers > MAX_USERS) {
       socket.emit("server-full");
       socket.disconnect(true);
-      console.log(
-        `Bağlantı reddedildi. Sunucu dolu. Kullanıcı: ${username}, Soket: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
-      );
       return;
     }
+
     users[socket.id] = {
       username,
       id: socket.id,
       hasAudio: true,
       hasVideo: true,
     };
-    console.log("Kullanıcı bağlandı:", username, socket.id);
-    io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
-    io.to(SERVER_ROOM).emit("user-joined", { username, id: socket.id });
+
+    io.to(SERVER_ROOM).emit("user-updated", Object.values(users));
+    io.to(SERVER_ROOM).emit("user-joined", {
+      username,
+      id: socket.id,
+      totalUsers: Object.values(users).length,
+    });
   });
 
   socket.on("get-videos", () => {
@@ -415,6 +417,16 @@ io.on("connection", (socket) => {
       io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
       io.to(SERVER_ROOM).emit("user-left", socket.id);
       socket.leave(SERVER_ROOM);
+    }
+  });
+
+  let lastUpdateTime = 0;
+  socket.on("time-update", (time) => {
+    const now = Date.now();
+    if (now - lastUpdateTime > 1000) {
+      // 1 saniye throttle
+      lastUpdateTime = now;
+      socket.broadcast.emit("time-update", time);
     }
   });
 
