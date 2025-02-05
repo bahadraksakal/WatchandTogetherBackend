@@ -217,19 +217,20 @@ const handleWebRTCEvents = (socket) => {
       const caller = users[socket.id];
       const callee = users[to];
 
-      if (!caller.hasAudio && !caller.hasVideo) {
-        socket.emit("call-error", "En az bir medya cihazı etkin olmalıdır");
-        return;
-      }
+      if (!caller || !callee) return;
 
-      if (!activeCalls[to] && !activeCalls[socket.id]) {
-        activeCalls[to] = socket.id;
-        activeCalls[socket.id] = to;
-        io.to(to).emit("incoming-call", { from: socket.id });
-      }
+      io.to(to).emit("incoming-call", {
+        from: socket.id,
+        username: caller.username,
+      });
     },
+
     "accept-call": ({ signal, to }) => {
-      io.to(to).emit("call-accepted", { signal, answerId: socket.id });
+      io.to(to).emit("call-accepted", {
+        signal,
+        answerId: socket.id,
+        username: users[socket.id]?.username,
+      });
     },
     "ice-candidate": (data) => {
       if (data.to && activeCalls[socket.id] === data.to) {
@@ -262,33 +263,28 @@ const handleWebRTCEvents = (socket) => {
 
 let connectedUsers = 0;
 io.on("connection", (socket) => {
-  connectedUsers++;
-  console.log(
-    `Yeni soket bağlandı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
-  );
-
-  socket.join(SERVER_ROOM);
+  let currentUser = null;
 
   socket.on("user-join", (username) => {
-    if (connectedUsers > MAX_USERS) {
+    if (Object.keys(users).length >= MAX_USERS) {
       socket.emit("server-full");
       socket.disconnect(true);
       return;
     }
 
-    users[socket.id] = {
-      username,
+    currentUser = {
       id: socket.id,
+      username,
       hasAudio: true,
       hasVideo: true,
     };
 
-    io.to(SERVER_ROOM).emit("user-updated", Object.values(users));
-    io.to(SERVER_ROOM).emit("user-joined", {
-      username,
-      id: socket.id,
-      totalUsers: Object.values(users).length,
-    });
+    users[socket.id] = currentUser;
+    connectedUsers = Object.keys(users).length;
+
+    // Tüm kullanıcılara güncel listeyi gönder
+    io.emit("user-count-update", connectedUsers);
+    io.emit("existing-users", Object.values(users));
   });
 
   socket.on("get-videos", () => {
@@ -401,17 +397,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    connectedUsers = Object.keys(users).length;
-    io.emit("user-count-update", connectedUsers);
-    console.log(
-      `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
-    );
-    if (users[socket.id]) {
-      console.log("Kullanıcı ayrıldı:", users[socket.id].username, socket.id);
+    if (currentUser) {
       delete users[socket.id];
-      io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
-      io.to(SERVER_ROOM).emit("user-left", socket.id);
-      socket.leave(SERVER_ROOM);
+      connectedUsers = Object.keys(users).length;
+      io.emit("user-count-update", connectedUsers);
+      io.emit("user-left", socket.id);
     }
   });
 
