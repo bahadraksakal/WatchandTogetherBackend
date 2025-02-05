@@ -401,7 +401,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    connectedUsers--;
+    connectedUsers = Object.keys(users).length;
+    io.emit("user-count-update", connectedUsers);
     console.log(
       `Soket ayrıldı: ${socket.id}, Toplam Bağlantı: ${connectedUsers}`
     );
