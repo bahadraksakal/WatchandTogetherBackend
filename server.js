@@ -187,25 +187,25 @@ app.delete("/videos/:filename", async (req, res) => {
 let connectedUsers = 0;
 const users = {}; // { socketId: { username, id, hasAudio, hasVideo } }
 const SERVER_ROOM = "server-room"; // Sabit oda adı
+const MAX_USERS = 2;
 let videoState = {
   isPlaying: false,
   currentTime: 0,
   muted: false,
   volume: 1,
   currentVideo: null,
+  lastUpdatedBy: null,
 };
 
 const iceServers = [
   {
     urls: [
+      "stun:stun.l.google.com:19302",
       "turn:35.179.115.239:3478?transport=udp",
       "turn:35.179.115.239:3478?transport=tcp",
-      "turns:watchtogetherturn.duckdns.org:5349?transport=udp",
-      "turns:watchtogetherturn.duckdns.org:5349?transport=tcp",
     ],
     username: "bahadr",
     credential: "bahadr12345",
-    realm: "watchtogetherturn", // **REALM'i buraya ekleyin ve `watchtogetherturn` olarak ayarlayın.**
   },
 ];
 
@@ -240,12 +240,12 @@ const handleWebRTCEvents = (socket) => {
         io.to(data.to).emit("ice-candidate", data.candidate);
       }
     },
-    "call-user": async ({ signal, to }) => {
-      const targetSocket = io.sockets.sockets.get(to);
-      if (targetSocket) {
-        targetSocket.emit("incoming-call", {
-          from: socket.id,
+    "call-user": ({ signal, to }) => {
+      if (activeCalls[to] === socket.id) {
+        io.to(to).emit("incoming-call", {
           signal,
+          from: socket.id,
+          username: users[socket.id]?.username,
         });
       }
     },
@@ -304,7 +304,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("user-join", (username) => {
-    if (connectedUsers >= 2) {
+    if (connectedUsers >= MAX_USERS) {
       socket.emit("server-full");
       socket.disconnect(true);
       console.log(`Bağlantı reddedildi. Sunucu dolu. Kullanıcı: ${username}`);
@@ -372,19 +372,39 @@ io.on("connection", (socket) => {
   });
 
   // Video kontrol olayları (aynı kalır)
-  socket.on("play", () => {
-    videoState.isPlaying = true;
-    io.to(SERVER_ROOM).emit("play");
+  socket.on("play", (currentTime) => {
+    if (videoState.lastUpdatedBy !== socket.id) {
+      videoState = {
+        ...videoState,
+        isPlaying: true,
+        currentTime,
+        lastUpdatedBy: socket.id,
+      };
+      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
+    }
   });
 
-  socket.on("pause", () => {
-    videoState.isPlaying = false;
-    io.to(SERVER_ROOM).emit("pause");
+  socket.on("pause", (currentTime) => {
+    if (videoState.lastUpdatedBy !== socket.id) {
+      videoState = {
+        ...videoState,
+        isPlaying: false,
+        currentTime,
+        lastUpdatedBy: socket.id,
+      };
+      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
+    }
   });
 
   socket.on("seek", (time) => {
-    videoState.currentTime = time;
-    io.to(SERVER_ROOM).emit("seek", time);
+    if (videoState.lastUpdatedBy !== socket.id) {
+      videoState = {
+        ...videoState,
+        currentTime: time,
+        lastUpdatedBy: socket.id,
+      };
+      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
+    }
   });
 
   socket.on("mute", () => {
