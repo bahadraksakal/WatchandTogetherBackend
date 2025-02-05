@@ -198,12 +198,15 @@ let videoState = {
 const iceServers = [
   {
     urls: [
-      "turn:watchtogether.duckdns.org:3478?transport=tcp",
-      "turn:watchtogether.duckdns.org:5349?transport=tcp",
-      "turn:watchtogether.duckdns.org:3478?transport=udp",
+      "stun:stun.l.google.com:19302",
+      "turn:35.179.115.239:3478?transport=udp",
+      "turn:35.179.115.239:3478?transport=tcp",
+      "turns:watchtogetherturn.duckdns.org:5349?transport=udp",
+      "turns:watchtogetherturn.duckdns.org:5349?transport=tcp",
     ],
     username: "bahadr",
     credential: "bahadr12345",
+    realm: "watchtogetherturn", // **REALM'i buraya ekleyin ve `watchtogetherturn` olarak ayarlayın.**
   },
 ];
 
