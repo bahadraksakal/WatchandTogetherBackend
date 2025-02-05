@@ -184,7 +184,6 @@ app.delete("/videos/:filename", async (req, res) => {
   }
 });
 
-let connectedUsers = 0;
 const users = {}; // { socketId: { username, id, hasAudio, hasVideo } }
 const SERVER_ROOM = "server-room"; // Sabit oda adı
 const MAX_USERS = 2;
@@ -228,12 +227,8 @@ const handleWebRTCEvents = (socket) => {
         io.to(to).emit("incoming-call", { from: socket.id });
       }
     },
-    "end-call": ({ to }) => {
-      if (activeCalls[to]) {
-        io.to(activeCalls[to]).emit("call-ended");
-        io.to(to).emit("call-ended");
-        delete activeCalls[to];
-      }
+    "accept-call": ({ signal, to }) => {
+      io.to(to).emit("call-accepted", { signal, answerId: socket.id });
     },
     "ice-candidate": (data) => {
       if (data.to && activeCalls[socket.id] === data.to) {
@@ -249,69 +244,32 @@ const handleWebRTCEvents = (socket) => {
         });
       }
     },
-    "accept-call": async ({ signal, to }) => {
-      const targetSocket = io.sockets.sockets.get(to);
-      if (targetSocket) {
-        targetSocket.emit("call-accepted", signal);
+    "end-call": ({ to }) => {
+      if (activeCalls[socket.id]) {
+        const targetSocketId = activeCalls[socket.id];
+        delete activeCalls[socket.id];
+        delete activeCalls[targetSocketId];
+        io.to(targetSocketId).emit("call-ended");
       }
     },
   };
 
-  Object.entries(events).forEach(([eventName, handler]) => {
-    socket.on(eventName, (...args) => {
-      try {
-        handler(...args);
-      } catch (error) {
-        console.error(`${eventName} hatası:`, error);
-        socket.emit("webrtc-error", {
-          event: eventName,
-          message: error.message,
-        });
-      }
-    });
-  });
+  for (const eventName in events) {
+    socket.on(eventName, events[eventName]);
+  }
 };
 
+let connectedUsers = 0;
 io.on("connection", (socket) => {
-  console.log(`Yeni bir soket bağlandı: ${socket.id}`);
-
-  socket.onAny((eventName, ...args) => {
-    const dataSnippet =
-      args.length > 0
-        ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) +
-          "..."
-        : "";
-    console.log(
-      `Gelen Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`
-    );
-  });
-
-  const originalEmit = socket.emit;
-  socket.emit = function (eventName, ...args) {
-    const dataSnippet =
-      args.length > 0
-        ? JSON.stringify(args.length === 1 ? args[0] : args).substring(0, 100) +
-          "..."
-        : "";
-    console.log(
-      `Giden Olay: ${eventName} - Veri: ${dataSnippet} (Soket ID: ${socket.id})`
-    );
-    originalEmit.apply(socket, [eventName, ...args]);
-  };
-
-  socket.on("error", (err) => {
-    console.error(`Socket Hatası (ID: ${socket.id}):`, err);
-  });
+  connectedUsers++;
+  socket.join(SERVER_ROOM); // Odaya giriş
 
   socket.on("user-join", (username) => {
     if (connectedUsers >= MAX_USERS) {
       socket.emit("server-full");
       socket.disconnect(true);
-      console.log(`Bağlantı reddedildi. Sunucu dolu. Kullanıcı: ${username}`);
       return;
     }
-
-    connectedUsers++;
     users[socket.id] = {
       username,
       id: socket.id,
@@ -319,21 +277,12 @@ io.on("connection", (socket) => {
       hasVideo: true,
     };
     console.log("Kullanıcı bağlandı:", username, socket.id);
-
-    socket.join(SERVER_ROOM); // Kullanıcıyı otomatik olarak server odasına ekle
-
-    // Mevcut kullanıcıların bilgisini gönder
     io.to(SERVER_ROOM).emit("existing-users", Object.values(users));
+    io.to(SERVER_ROOM).emit("user-joined", { username, id: socket.id }); // Kullanıcı adı gönderiliyor
+  });
 
-    // Yeni kullanıcının katıldığını diğerlerine bildir
-    socket.broadcast
-      .to(SERVER_ROOM)
-      .emit("user-joined", { username, id: socket.id });
-
-    // Mevcut video durumunu gönder
-    socket.emit("video-state", videoState);
-
-    // Mevcut video listesini gönder
+  // Video listesini gönder
+  socket.on("get-videos", () => {
     fs.readdir(uploadDir, (err, files) => {
       if (err) {
         console.error("Video dizini okunurken hata:", err);
@@ -341,23 +290,23 @@ io.on("connection", (socket) => {
       }
       socket.emit("available-videos", files);
     });
-
-    // Mevcut yükleme durumunu gönder
-    socket.emit("upload-status", isUploading);
-
-    // Diğer kullanıcıların medya durumlarını yeni bağlanan kullanıcıya gönder
-    Object.keys(users).forEach((userId) => {
-      if (userId !== socket.id) {
-        socket.emit("remote-media-toggled", {
-          socketId: users[userId].id,
-          audio: users[userId].hasAudio,
-          video: users[userId].hasVideo,
-        });
-      }
-    });
-    // **Yeni: STUN sunucu bilgilerini gönder**
-    socket.emit("ice-servers", iceServers);
   });
+
+  // Mevcut yükleme durumunu gönder
+  socket.emit("upload-status", isUploading);
+
+  // Diğer kullanıcıların medya durumlarını yeni bağlanan kullanıcıya gönder
+  Object.keys(users).forEach((userId) => {
+    if (userId !== socket.id) {
+      socket.emit("remote-media-toggled", {
+        socketId: users[userId].id,
+        audio: users[userId].hasAudio,
+        video: users[userId].hasVideo,
+      });
+    }
+  });
+  // **Yeni: STUN sunucu bilgilerini gönder**
+  socket.emit("ice-servers", iceServers);
 
   socket.on("toggle-media", ({ audio, video }) => {
     users[socket.id].hasAudio = audio;
