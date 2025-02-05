@@ -327,38 +327,32 @@ io.on("connection", (socket) => {
   });
 
   socket.on("play", (currentTime) => {
-    if (videoState.lastUpdatedBy !== socket.id) {
-      videoState = {
-        ...videoState,
-        isPlaying: true,
-        currentTime,
-        lastUpdatedBy: socket.id,
-      };
-      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
-    }
+    videoState = {
+      ...videoState,
+      isPlaying: true,
+      currentTime,
+      lastUpdatedBy: socket.id,
+    };
+    io.to(SERVER_ROOM).emit("video-state", videoState);
   });
 
   socket.on("pause", (currentTime) => {
-    if (videoState.lastUpdatedBy !== socket.id) {
-      videoState = {
-        ...videoState,
-        isPlaying: false,
-        currentTime,
-        lastUpdatedBy: socket.id,
-      };
-      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
-    }
+    videoState = {
+      ...videoState,
+      isPlaying: false,
+      currentTime,
+      lastUpdatedBy: socket.id,
+    };
+    io.to(SERVER_ROOM).emit("video-state", videoState);
   });
 
   socket.on("seek", (time) => {
-    if (videoState.lastUpdatedBy !== socket.id) {
-      videoState = {
-        ...videoState,
-        currentTime: time,
-        lastUpdatedBy: socket.id,
-      };
-      socket.broadcast.to(SERVER_ROOM).emit("video-state", videoState);
-    }
+    videoState = {
+      ...videoState,
+      currentTime: time,
+      lastUpdatedBy: socket.id,
+    };
+    io.to(SERVER_ROOM).emit("video-state", videoState);
   });
 
   socket.on("mute", () => {
@@ -423,8 +417,7 @@ io.on("connection", (socket) => {
   let lastUpdateTime = 0;
   socket.on("time-update", (time) => {
     const now = Date.now();
-    if (now - lastUpdateTime > 1000) {
-      // 1 saniye throttle
+    if (now - lastUpdateTime > 2000) {
       lastUpdateTime = now;
       socket.broadcast.emit("time-update", time);
     }
