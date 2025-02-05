@@ -1,4 +1,4 @@
-// Backend kodları (server.js veya index.js dosyanız)
+require("dotenv").config();
 const express = require("express");
 const https = require("https");
 const cors = require("cors");
@@ -17,8 +17,8 @@ app.use(helmet());
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 dakika
-  max: 100, // Her IP için maksimum istek sayısı
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS),
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS),
 });
 
 app.use(limiter);
@@ -35,16 +35,52 @@ const credentials = {
   ),
 };
 
-const server = https.createServer(credentials, app);
+// CORS yapılandırması
+const corsOptions = {
+  origin:
+    process.env.NODE_ENV === "production"
+      ? process.env.ALLOWED_ORIGINS.split(",")
+      : "*",
+  methods: process.env.CORS_METHODS.split(","),
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "x-auth-token"],
+};
+
+app.use(cors(corsOptions));
+
+// HTTPS ve HTTP sunucuları
+let server;
+if (process.env.NODE_ENV === "production") {
+  try {
+    const credentials = {
+      key: fs.readFileSync(process.env.SSL_KEY_PATH, "utf8"),
+      cert: fs.readFileSync(process.env.SSL_CERT_PATH, "utf8"),
+      ca: fs.readFileSync(process.env.SSL_CA_PATH, "utf8"),
+    };
+    server = https.createServer(credentials, app);
+  } catch (error) {
+    console.error("HTTPS sertifika hatası:", error);
+    console.log("HTTP sunucusu başlatılıyor...");
+    server = http.createServer(app);
+  }
+} else {
+  server = http.createServer(app);
+}
+
+// Socket.IO yapılandırması
 const io = new Server(server, {
-  cors: {
-    origin:
-      process.env.NODE_ENV === "production"
-        ? ["https://watchtogether.duckdns.org"]
-        : "*",
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    credentials: true,
-  },
+  cors: corsOptions,
+  pingTimeout: parseInt(process.env.WS_PING_TIMEOUT),
+  pingInterval: parseInt(process.env.WS_PING_INTERVAL),
+  transports: ["websocket", "polling"],
+  allowEIO3: true,
+  maxHttpBufferSize: 1e8,
+  path: "/socket.io",
+});
+
+// WebSocket hata yönetimi
+io.engine.on("connection_error", (err) => {
+  console.error("Socket.IO bağlantı hatası:", err);
 });
 
 app.get("/health", (req, res) => {
@@ -64,7 +100,7 @@ app.use((req, res, next) => {
 
 app.use("/videos", express.static(path.join(__dirname, "videos")));
 
-const uploadDir = path.join(__dirname, "videos");
+const uploadDir = path.join(__dirname, process.env.UPLOAD_DIR);
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
@@ -93,7 +129,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 16 * 1024 * 1024 * 1024 },
+  limits: { fileSize: process.env.MAX_FILE_SIZE },
 });
 
 const checkTotalFileSize = async (req, res, next) => {
@@ -126,8 +162,8 @@ let isUploading = false;
 
 // Video upload geliştirmeleri
 const videoUploadLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 saat
-  max: 5, // Her IP için maksimum yükleme sayısı
+  windowMs: parseInt(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS),
+  max: parseInt(process.env.UPLOAD_RATE_LIMIT_MAX),
 });
 
 app.post("/upload", videoUploadLimiter, checkTotalFileSize, (req, res) => {
@@ -591,12 +627,12 @@ const cleanupOldFiles = async () => {
   try {
     const files = await fs.promises.readdir(uploadDir);
     const now = Date.now();
-    const ONE_DAY = 24 * 60 * 60 * 1000;
+    const retentionPeriod = parseInt(process.env.FILE_RETENTION_PERIOD);
 
     for (const file of files) {
       const filePath = path.join(uploadDir, file);
       const stats = await fs.promises.stat(filePath);
-      if (now - stats.mtime.getTime() > ONE_DAY) {
+      if (now - stats.mtime.getTime() > retentionPeriod) {
         await fs.promises.unlink(filePath);
         console.log(`Eski dosya silindi: ${file}`);
       }
@@ -607,7 +643,7 @@ const cleanupOldFiles = async () => {
 };
 
 // Her gün dosya temizliği yap
-setInterval(cleanupOldFiles, 24 * 60 * 60 * 1000);
+setInterval(cleanupOldFiles, parseInt(process.env.AUTO_CLEANUP_INTERVAL));
 
 app.use((err, req, res, next) => {
   console.error("Hata:", err.stack);
@@ -648,7 +684,13 @@ const apiLimiter = rateLimit({
 
 app.use("/api/", apiLimiter);
 
-const PORT = 8443;
-server.listen(PORT, () => {
-  console.log(`Sunucu HTTPS üzerinden ${PORT} portunda çalışıyor.`);
+// Port yapılandırması
+const PORT = process.env.PORT || 8443;
+const HOST = process.env.HOST || "0.0.0.0";
+
+server.listen(PORT, HOST, () => {
+  const protocol = server instanceof https.Server ? "HTTPS" : "HTTP";
+  console.log(
+    `Sunucu ${protocol} üzerinden ${HOST}:${PORT} adresinde çalışıyor.`
+  );
 });
